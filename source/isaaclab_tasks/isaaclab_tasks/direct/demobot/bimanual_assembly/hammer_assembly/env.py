@@ -253,7 +253,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         # self.left_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
         # self.left_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
 
-        self.pos_tolerance_curriculum_step = 200 if self.use_left_side_reward and self.use_right_side_reward else 100
+        self.pos_tolerance_curriculum_step = 200 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 100
 
         self.reset_to_last_success_ratio = 0.5
         self.num_eval_envs = self.cfg.num_eval_envs
