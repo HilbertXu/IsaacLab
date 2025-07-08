@@ -282,7 +282,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         
         self.delta_qpos = []
         self.episode_log = {}
-        self.episode_consecutive_successes = []
+        self.eval_consecutive_successes = torch.zeros(self.num_eval_envs, dtype=torch.float, device=self.device)
         self.extras["log"] = {
             "common_step_counter": None,
             "consecutive_successes": None,
@@ -1279,7 +1279,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.extras["log"]["goal_reach_thresh"] = self.right_object_pos_tolerance.mean()
         self.extras["log"]["goal_reach_episode_counter"] = self.goal_reach_episode_counter.mean()
 
-        self.episode_consecutive_successes.append(self.successes[self.eval_env_mask])
+        # keep tracking of the max consecutive successes for each eval envs
+        self.eval_consecutive_successes = torch.maximum(self.successes[self.eval_env_mask], self.eval_consecutive_successes)
         
         for k in sorted(list(log_dict.keys())):
             if k not in self.extras["log"].keys():
@@ -1398,6 +1399,9 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.lift_episode_counter[env_ids]
         )
 
+        # Update the number of consecutive success for the reset eval envs
+        eval_env_ids = env_ids[env_ids < self.num_eval_envs]
+        
         self._compute_curriculum(env_ids)
 
         # reset in chunk steps
@@ -1418,6 +1422,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_step_to_reach_counter[env_ids] = 0
         self.right_step_to_lift_counter[env_ids] = 0
         self.left_step_to_lift_counter[env_ids] = 0
+
+        self.eval_consecutive_successes[eval_env_ids] = 0.0
         
         # update goal pose and markers
         self.right_goal_rot[env_ids] = self.right_ref_targets[self.ref_chunk_step_idx[env_ids, 0], 3:7]
@@ -1633,31 +1639,27 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.reset_to_last_success_ratio = max(self.reset_to_last_success_ratio-0.05, 0.05)
 
         # reduce the threshold for reaching the sub goal
-        if len(self.episode_consecutive_successes) > 0:
-            episode_consecutive_successes = torch.stack(self.episode_consecutive_successes, dim=1).max(dim=-1).values # [num_envs, ep_length]
-            self.goal_reach_episode_counter[env_ids] = torch.where(
-                episode_consecutive_successes >= self.max_consecutive_success - 1,
-                self.goal_reach_episode_counter[env_ids] + 1,
-                self.goal_reach_episode_counter[env_ids]
-            )
+        mean_eval_consecutive_successes = self.eval_consecutive_successes.mean() # [num_eval_envs, ep_length]
+        if mean_eval_consecutive_successes > self.max_consecutive_success - 1:
+            self.goal_reach_episode_counter[env_ids] += 1
 
-            self.right_object_pos_tolerance[env_ids] = torch.where(
-                self.goal_reach_episode_counter[env_ids] > 50,
-                torch.clamp(self.right_object_pos_tolerance[env_ids] - 0.005, min=0.005),
-                self.right_object_pos_tolerance[env_ids]
-            )
+        self.right_object_pos_tolerance[env_ids] = torch.where(
+            self.goal_reach_episode_counter[env_ids] > 50,
+            torch.clamp(self.right_object_pos_tolerance[env_ids] - 0.005, min=0.005),
+            self.right_object_pos_tolerance[env_ids]
+        )
 
-            self.left_object_pos_tolerance[env_ids] = torch.where(
-                self.goal_reach_episode_counter[env_ids] > 50,
-                torch.clamp(self.left_object_pos_tolerance[env_ids] - 0.005, min=0.005),
-                self.left_object_pos_tolerance[env_ids]
-            )
+        self.left_object_pos_tolerance[env_ids] = torch.where(
+            self.goal_reach_episode_counter[env_ids] > 50,
+            torch.clamp(self.left_object_pos_tolerance[env_ids] - 0.005, min=0.005),
+            self.left_object_pos_tolerance[env_ids]
+        )
 
-            self.goal_reach_episode_counter[env_ids] = torch.where(
-                self.goal_reach_episode_counter[env_ids] > 50,
-                0,
-                self.goal_reach_episode_counter[env_ids]
-            )
+        self.goal_reach_episode_counter[env_ids] = torch.where(
+            self.goal_reach_episode_counter[env_ids] > 50,
+            0,
+            self.goal_reach_episode_counter[env_ids]
+        )
 
 
 
