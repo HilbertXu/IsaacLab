@@ -8,6 +8,7 @@ Description:
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 import pickle
 import math
@@ -17,12 +18,12 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, AssetBase, RigidObject, RigidObjectCfg
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.envs import DirectRLEnv
-from isaaclab.markers.config import FRAME_MARKER_CFG
+from isaaclab.markers.config import FRAME_MARKER_CFG, RED_ARROW_X_MARKER_CFG, BLUE_ARROW_X_MARKER_CFG
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.envs.common import VecEnvStepReturn
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane, spawn_from_usd
 from isaaclab.sim.spawners.meshes import spawn_mesh_cuboid, MeshCuboidCfg
-from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate, matrix_from_quat
+from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate, matrix_from_quat, quat_apply
 
 from isaaclab.sensors import (
     FrameTransformer,
@@ -81,6 +82,25 @@ def plot(delta_qpos, joint_names, output_f):
         plt.close(fig)  # Close the figure to avoid memory issues
 
 
+def plot_curve(log_episode):
+    from glob import glob
+    num_episode = len(glob("./episode_log_*.png"))
+    num_figures = len(log_episode.keys())
+    nrow = 4
+    ncol = num_figures // 4 + 1
+    fig, axes = plt.subplots(ncol, nrow, figsize=(16, 8), sharey=True)
+    axes = axes.flatten()
+
+    for ax, (name, values) in zip(axes, log_episode.items()):
+        x = list(range(len(values)))
+        ax.plot(x, values)
+        ax.set_title(name)
+        ax.set_xlabel("Step")
+        ax.grid(True)
+    
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(f'./episode_log_{num_episode}.png')
+
 
 class HammerAssemblyEnv(DirectRLEnv):
     # pre-physics step calls
@@ -118,7 +138,6 @@ class HammerAssemblyEnv(DirectRLEnv):
         **kwargs
     ):
         super().__init__(cfg, render_mode, **kwargs)
-
         self.dt = self.cfg.sim.dt * self.cfg.decimation
         self.debug = self.cfg.debug
         # Resolving the scene entities
@@ -155,6 +174,22 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.num_left_finger_tips = len(self.left_finger_tip_indices)
         left_joint_names = [n for n in self.robot.joint_names if 'left' in n]
         self.left_joint_indices = [self.robot.joint_names.index(n) for n in left_joint_names]
+
+        if self.cfg.use_left_side_reward and not self.cfg.use_right_side_reward:
+            arm_joint_names = [n for n in self.robot.joint_names if 'panda' in n and 'left' in n]
+        if self.cfg.use_right_side_reward and not self.cfg.use_left_side_reward:
+            arm_joint_names = [n for n in self.robot.joint_names if 'panda' in n and 'right' in n]
+        if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward:
+            arm_joint_names = [n for n in self.robot.joint_names if 'panda' in n]
+        self.arm_joint_indices = [self.robot.joint_names.index(n) for n in arm_joint_names]
+
+        if self.cfg.use_left_side_reward and not self.cfg.use_right_side_reward:
+            hand_joint_names = [n for n in self.robot.joint_names if 'panda' not in n and 'left' in n]
+        if self.cfg.use_right_side_reward and not self.cfg.use_left_side_reward:
+            hand_joint_names = [n for n in self.robot.joint_names if 'panda' not in n and 'right' in n]
+        if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward:
+            hand_joint_names = [n for n in self.robot.joint_names if 'panda' not in n]
+        self.hand_joint_indices = [self.robot.joint_names.index(n) for n in hand_joint_names]
         
 
         # create auxiliary variables for computing applied action, observations and rewards
@@ -169,13 +204,15 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.cur_targets = torch.zeros((self.num_envs, self.num_robot_dofs), dtype=torch.float, device=self.device)
         self.last_success_prev_targets = torch.zeros((self.num_envs, self.num_robot_dofs), dtype=torch.float, device=self.device)
         self.last_success_cur_targets = torch.zeros((self.num_envs, self.num_robot_dofs), dtype=torch.float, device=self.device)
-        
 
         # default goal positions
         self.right_goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
         self.right_goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
         self.left_goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
         self.left_goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
+
+        self.right_object_not_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.left_object_not_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         self.right_object_not_lifted = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         self.left_object_not_lifted = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
@@ -200,18 +237,39 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
 
-        self.right_object_lift_thresh = 0.005 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-        self.right_object_pos_tolerance = 0.006 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        self.sync_window_size = 60
+        self.right_object_lift_thresh = 0.21 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        self.right_object_pos_tolerance = 0.075 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         self.right_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
+        self.right_finger_dist_tolerance = 0.1 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         
-        self.left_object_lift_thresh = 0.005 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-        self.left_object_pos_tolerance = 0.006 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        self.left_object_lift_thresh = 0.18 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        self.left_object_pos_tolerance = 0.0075 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         self.left_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
+        self.left_finger_dist_tolerance = 0.1 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+
+        # self.left_object_lift_thresh = 0.21 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        # self.left_object_pos_tolerance = 0.027 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        # self.left_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
+        # self.left_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+
+        self.pos_tolerance_curriculum_step = 200 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 100
+
+        self.reset_to_last_success_ratio = 0.0
+        self.num_eval_envs = self.cfg.num_eval_envs if self.num_envs > self.cfg.num_eval_envs else self.num_envs
+        self.eval_env_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.eval_env_mask[:self.num_eval_envs] = torch.tensor(True)
         
         self.lift_episode_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.lift_step_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.goal_reach_episode_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.goal_reach_step_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        # counter for counting how many steps the RL takes to reach the current sub-goal
+        self.right_step_to_lift_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.left_step_to_lift_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.right_step_to_reach_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.left_step_to_reach_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         self.control_mode = self.cfg.control_mode
         self.use_ref = self.cfg.use_ref
@@ -221,15 +279,68 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.use_right_side_reward = self.cfg.use_right_side_reward
         self.use_left_side_reward = self.cfg.use_left_side_reward
         self.use_object_keypoint = self.cfg.use_object_keypoint
+        self.distance_function = self.cfg.distance_function
     
-
         
         self.delta_qpos = []
+        self.episode_log = {}
+        self.eval_consecutive_successes = torch.zeros(self.num_eval_envs, dtype=torch.float, device=self.device)
+        self.extras["log"] = {
+            "common_step_counter": None,
+            "consecutive_successes": None,
+            "lift_thresh": None,
+            "lift_episode_counter": None,
+            "goal_reach_thresh": None,
+            "goal_reach_episode_counter": None,
+        }
+        
+        if self.use_left_side_reward:
+            self.extras["log"].update(
+                {
+                    "left_step_to_lift_counter": None,
+                    "left_step_to_reach_counter": None,
+                    "left_ee2o_dist": None,
+                    "left_h2o_dist": None,
+                    "left_goal_dist": None,
+                    "left_ee2o_dist_reward": None,
+                    "left_h2o_dist_reward": None,
+                    "left_goal_dist_reward": None,
+                    "left_object_reached_bonus": None,
+                    "left_lift_bonus": None,
+                    "left_goal_reached_bonus": None,
+                    "left_move_penalty": None,
+                }
+            )
+        
+        if self.use_right_side_reward:
+            self.extras["log"].update(
+                {
+                    "right_step_to_lift_counter": None,
+                    "right_step_to_reach_counter": None,
+                    "right_ee2o_dist": None,
+                    "right_h2o_dist": None,
+                    "right_goal_dist": None,
+                    "right_ee2o_dist_reward": None,
+                    "right_h2o_dist_reward": None,
+                    "right_goal_dist_reward": None,
+                    "right_object_reached_bonus": None,
+                    "right_lift_bonus": None,
+                    "right_goal_reached_bonus": None,
+                    "right_move_penalty": None,
+                }
+            )
+        
+        if self.use_left_side_reward and self.use_right_side_reward:
+            self.extras["log"].update(
+                {
+                    "sync_lift_bonus": None,
+                    "sync_goal_reached_bonus": None,
+                }
+            )
         
         if self.debug:
             frame_marker_cfg = FRAME_MARKER_CFG.copy()
-            frame_marker_cfg.markers["frame"].scale = (0.025, 0.025, 0.025)
-            
+            frame_marker_cfg.markers["frame"].scale = (0.075, 0.075, 0.075)
             self.palm_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/ee_current"))
             self.object_marker = VisualizationMarkers(frame_marker_cfg.replace(prim_path="/Visuals/object_current"))
             self.finger_markers = [VisualizationMarkers(frame_marker_cfg.replace(prim_path=f"/Visuals/finger_{i}")) for i in range(len(self.right_finger_tip_indices))]
@@ -261,6 +372,14 @@ class HammerAssemblyEnv(DirectRLEnv):
 
 
     def _setup_scene(self):
+        if hasattr(self.cfg, 'right_object_keypoint') and hasattr(self.cfg, 'left_object_keypoint'):
+            self.right_object_keypoints = torch.tensor(np.load(self.cfg.right_object_keypoint)['object_keypoints'][:], dtype=torch.float, device=self.device)
+            self.left_object_keypoints = torch.tensor(np.load(self.cfg.left_object_keypoint)['object_keypoints'][:], dtype=torch.float, device=self.device)
+
+            self.right_object_grasp_keypoints = torch.tensor(np.load(self.cfg.right_object_keypoint)['grasp_keypoints'][:], dtype=torch.float, device=self.device)
+            self.left_object_grasp_keypoints = torch.tensor(np.load(self.cfg.left_object_keypoint)['grasp_keypoints'][:], dtype=torch.float, device=self.device)
+
+
         demo = pickle.load(open(self.cfg.replay_buffer, 'rb'))
         self.action_buffer = demo['action_chunks']
 
@@ -283,9 +402,14 @@ class HammerAssemblyEnv(DirectRLEnv):
         
         # initialize right object
         right_object_init_pos = self.right_object_init_pose[:3]
-        # right_object_init_pos[0] -= 0.05
+        # right_object_init_pos[0] += 0.05
         right_object_init_quat = self.right_object_init_pose[3:7]
         self.right_object_init_pos = torch.tensor(right_object_init_pos+self.right_offset, dtype=torch.float, device=self.sim.device)
+        self.right_object_keypoint_init = torch.einsum(
+                'nij,nmj->nmi', 
+                matrix_from_quat(torch.tensor(right_object_init_quat, dtype=torch.float, device=self.sim.device).unsqueeze(0).repeat(self.num_envs, 1)), 
+                self.right_object_keypoints.clone().unsqueeze(0).repeat(self.num_envs, 1, 1)
+            ) + (self.right_object_init_pos).unsqueeze(0).repeat(self.num_envs, 1).unsqueeze(1) # [num_envs, N, 3]
         self.cfg.right_object_cfg.init_state = RigidObjectCfg.InitialStateCfg(
             pos=right_object_init_pos+self.right_offset,
             rot=right_object_init_quat
@@ -297,6 +421,11 @@ class HammerAssemblyEnv(DirectRLEnv):
         # left_object_init_pos[0] -= 0.05
         left_object_init_quat = self.left_object_init_pose[3:7]
         self.left_object_init_pos = torch.tensor(left_object_init_pos+self.left_offset, dtype=torch.float, device=self.sim.device)
+        self.left_object_keypoint_init = torch.einsum(
+                'nij,nmj->nmi', 
+                matrix_from_quat(torch.tensor(left_object_init_quat, dtype=torch.float, device=self.sim.device).unsqueeze(0).repeat(self.num_envs, 1)), 
+                self.left_object_keypoints.clone().unsqueeze(0).repeat(self.num_envs, 1, 1)
+            ) + (self.left_object_init_pos).unsqueeze(0).repeat(self.num_envs, 1).unsqueeze(1) # [num_envs, N, 3]
         self.cfg.left_object_cfg.init_state = RigidObjectCfg.InitialStateCfg(
             pos=left_object_init_pos+self.left_offset,
             rot=left_object_init_quat
@@ -308,9 +437,16 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.scene.rigid_objects["left_object"] = self.left_object
 
         self.right_ee_frame = FrameTransformer(self.cfg.right_ee_config)
-        self.scene.sensors["right_ee_frame"] = self.right_ee_frame
         self.left_ee_frame = FrameTransformer(self.cfg.left_ee_config)
+
+        self.right_palm_frame = FrameTransformer(self.cfg.right_palm_config)
+        self.left_palm_frame = FrameTransformer(self.cfg.left_palm_config)
+
+        self.scene.sensors["right_ee_frame"] = self.right_ee_frame
         self.scene.sensors["left_ee_frame"] = self.left_ee_frame
+        self.scene.sensors["right_palm_frame"] = self.right_palm_frame
+        self.scene.sensors["left_palm_frame"] = self.left_palm_frame
+
 
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
@@ -345,9 +481,6 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.right_goal_marker = VisualizationMarkers(self.cfg.right_goal_marker_cfg)
         self.left_goal_marker = VisualizationMarkers(self.cfg.left_goal_marker_cfg)
 
-        if hasattr(self.cfg, 'right_object_keypoint') and hasattr(self.cfg, 'left_object_keypoint'):
-            self.right_object_keypoints = torch.tensor(np.load(self.cfg.right_object_keypoint)['object_keypoints'][:], dtype=torch.float, device=self.device)
-            self.left_object_keypoints = torch.tensor(np.load(self.cfg.left_object_keypoint)['object_keypoints'][:], dtype=torch.float, device=self.device)
         
 
         # clone and replicate
@@ -395,6 +528,26 @@ class HammerAssemblyEnv(DirectRLEnv):
         if self.use_left_side_reward and self.use_right_side_reward:
             out = ref_actions + \
                 self.robot_dof_speed_scales * self.dt * pred_actions * self.cfg.action_scale
+        
+        out_fix_hand = out.clone()
+        out_fix_hand[:, self.hand_joint_indices] = self.robot.data.default_joint_pos[:, self.hand_joint_indices]
+
+        if self.use_right_side_reward and self.use_left_side_reward:
+            object_reached = (~self.right_object_not_reached) & (~self.left_object_not_reached)
+        else:
+            object_reached = (~self.right_object_not_reached) | (~self.left_object_not_reached)
+        out = torch.where(
+            (object_reached).unsqueeze(-1).repeat(1, self.num_robot_dofs),
+            out,
+            out_fix_hand
+        )
+
+        # right_joint7_idx = self.robot.joint_names.index('right_panda_joint_7')
+        # left_joint7_idx = self.robot.joint_names.index('left_panda_joint_7')
+
+        # out[:, right_joint7_idx] = self.robot_dof_upper_limits[:, right_joint7_idx] / 2
+
+        
         
         if self.plot_delta_qpos:
             self.delta_qpos.append((self.robot_dof_speed_scales * self.dt * pred_actions * self.cfg.action_scale)[0, :])
@@ -608,9 +761,9 @@ class HammerAssemblyEnv(DirectRLEnv):
         
         if len(reset_env_ids) > 0:
             self._reset_envs(
-                self.terminate.nonzero(as_tuple=False).squeeze(-1), 
-                (self.reset_out_of_reach & self.reset_time_outs).nonzero(as_tuple=False).squeeze(-1),
-                self.max_success_reached.nonzero(as_tuple=False).squeeze(-1)
+                self.terminate, 
+                (self.reset_out_of_reach & self.reset_time_outs),
+                self.max_success_reached
             )
             # update articulation kinematics
             self.scene.write_data_to_sim()
@@ -647,7 +800,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             object_angvel = obj.data.root_ang_vel_w.clone()
 
             return object_pos, object_rot, object_velocities, object_linvel, object_angvel
-
+        
         # data for robot
         self.robot_dof_pos = self.robot.data.joint_pos.clone()
         self.robot_dof_vel = self.robot.data.joint_vel.clone()
@@ -657,15 +810,17 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.num_envs, self.num_right_finger_tips, 3
         )
         self.right_fingertip_quat = self.robot.data.body_quat_w[:, self.right_finger_tip_indices].clone()
+        self.right_fingertip_velocities = self.robot.data.body_vel_w[:, self.right_finger_tip_indices].clone()
         
         self.left_fingertip_pos = self.robot.data.body_pos_w[:, self.left_finger_tip_indices].clone()
         self.left_fingertip_pos -= self.scene.env_origins.repeat((1, self.num_left_finger_tips)).reshape(
             self.num_envs, self.num_left_finger_tips, 3
         )
         self.left_fingertip_quat = self.robot.data.body_quat_w[:, self.left_finger_tip_indices].clone()
-
-        self.right_palm_pos = self.robot.data.body_pos_w[:, self.right_palm_body_idx].clone() - self.scene.env_origins
-        self.left_palm_pos = self.robot.data.body_pos_w[:, self.left_palm_body_idx].clone() - self.scene.env_origins
+        self.left_fingertip_velocities = self.robot.data.body_vel_w[:, self.left_finger_tip_indices].clone()
+        
+        self.right_palm_pos = self.right_palm_frame.data.target_pos_source[..., 0, :]
+        self.left_palm_pos = self.left_palm_frame.data.target_pos_source[..., 0, :]
 
         self.right_ee_pos = self.right_ee_frame.data.target_pos_source[..., 0, :]
         self.right_ee_quat = self.right_ee_frame.data.target_quat_source[..., 0, :]
@@ -678,13 +833,26 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.ref_actions, 
             normalize=True
         )
-        
+
         # data for object
         self.right_object_pos, self.right_object_rot, self.right_object_vel, \
             self.right_object_linvel, self.right_object_angvel = _compute_object_values(self.right_object)
         
         self.left_object_pos, self.left_object_rot, self.left_object_vel, \
             self.left_object_linvel, self.left_object_angvel = _compute_object_values(self.left_object)
+        
+
+        # right_hand_y_axis = self.right_ee_pos - self.right_palm_pos
+        # self.right_hand_grasp_axis = right_hand_y_axis / torch.norm(right_hand_y_axis, dim=-1, keepdim=True)
+
+        # self.hand_axis_markers.visualize(
+        #         self.right_palm_pos+self.scene.env_origins, 
+        #         self.right_ee_quat
+        #     )
+
+        # left_hand_y_axis = self.left_ee_pos - self.left_palm_pos
+        # self.left_hand_grasp_axis = left_hand_y_axis / torch.norm(left_hand_y_axis, dim=-1, keepdim=True)
+        
             
         if self.use_object_keypoint:
             self.right_object_keypoint_cur = torch.einsum(
@@ -711,26 +879,45 @@ class HammerAssemblyEnv(DirectRLEnv):
                 self.left_object_keypoints.clone().unsqueeze(0).repeat(self.num_envs, 1, 1)
             ) + self.left_goal_pos.unsqueeze(1) # [num_envs, N, 3]
 
-        
+            self.right_object_grasp_keypoint_cur = torch.einsum(
+                'nij,nmj->nmi', 
+                matrix_from_quat(self.right_object_rot), 
+                self.right_object_grasp_keypoints.clone().unsqueeze(0).repeat(self.num_envs, 1, 1)
+            ) + self.right_object_pos.unsqueeze(1) # [num_envs, N, 3]
+
+            self.left_object_grasp_keypoint_cur = torch.einsum(
+                'nij,nmj->nmi', 
+                matrix_from_quat(self.left_object_rot), 
+                self.left_object_grasp_keypoints.clone().unsqueeze(0).repeat(self.num_envs, 1, 1)
+            ) + self.left_object_pos.unsqueeze(1) # [num_envs, N, 3]
+
+
+            # right_object_y_axis = (self.right_object_keypoint_cur[:, 0] - self.right_object_keypoint_cur[:, 1]).clone()
+            # self.right_object_grasp_axis = right_object_y_axis / torch.norm(right_object_y_axis, dim=-1, keepdim=True)
+            # left_object_y_axis = (self.left_object_keypoint_cur[:, 0] - self.left_object_keypoint_cur[:, 1]).clone()
+            # self.left_object_grasp_axis = left_object_y_axis / torch.norm(left_object_y_axis, dim=-1, keepdim=True)
+
         
     
     def _get_observations(self) -> dict:
         if self.cfg.asymmetric_obs:
-            self.fingertip_force_sensors = self.robot.root_physx_view.get_link_incoming_joint_force()[
-                :, self.finger_bodies
+            self.left_fingertip_force_sensors = self.robot.root_physx_view.get_link_incoming_joint_force()[
+                :, self.left_finger_tip_indices
+            ]
+            self.right_fingertip_force_sensors = self.robot.root_physx_view.get_link_incoming_joint_force()[
+                :, self.right_finger_tip_indices
             ]
 
         if self.cfg.obs_type == "reduced":
             obs = self.compute_reduced_observations()
-        elif self.cfg.obs_type == "full":
-            obs = self.compute_full_observations()
+        
         else:
             print("Unknown observations type!")
 
         if self.cfg.asymmetric_obs:
             states = self.compute_full_state()
 
-        observations = {"policy": obs, "ref_act": self.ref_action_norm}
+        observations = {"policy": obs}
         if self.cfg.asymmetric_obs:
             observations = {"policy": obs, "critic": states}
         
@@ -751,6 +938,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             (self.cfg.vel_obs_scale * self.robot_dof_vel)[:, self.right_joint_indices],
             # hand to object
             self.right_ee_pos - self.right_object_pos, # right ee to right object translation
+            (self.right_fingertip_pos - self.right_object_pos.unsqueeze(1)).view(self.num_envs, self.num_right_finger_tips * 3),
         ]
         right_ref_act_obs = [
             self.ref_action_norm[:, self.right_joint_indices]
@@ -761,6 +949,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             unscale(self.robot_dof_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)[:, self.left_joint_indices],
             (self.cfg.vel_obs_scale * self.robot_dof_vel)[:, self.left_joint_indices],
             self.left_ee_pos - self.left_object_pos, # left ee to left object translation
+            (self.left_fingertip_pos - self.left_object_pos.unsqueeze(1)).view(self.num_envs, self.num_right_finger_tips * 3),
         ]
         left_ref_act_obs = [
             self.ref_action_norm[:, self.left_joint_indices]
@@ -811,6 +1000,105 @@ class HammerAssemblyEnv(DirectRLEnv):
 
         return obs
 
+    
+    def compute_full_state(self):
+        
+        states = [
+            # chunk_id condition
+            self.ref_chunk_step_idx[:, 0].reshape(self.num_envs, 1),
+            # last predicted action residual 
+            self.pred_actions,
+        ]
+        right_base_states = [
+            # robot joint pos & vel
+            unscale(self.robot_dof_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)[:, self.right_joint_indices],
+            (self.cfg.vel_obs_scale * self.robot_dof_vel)[:, self.right_joint_indices],
+            # hand to object
+            self.right_ee_pos - self.right_object_pos, # right ee to right object translation
+            # right finger tips
+            self.right_fingertip_pos.view(self.num_envs, self.num_right_finger_tips * 3),
+            self.right_fingertip_quat.view(self.num_envs, self.num_right_finger_tips * 4),
+            self.right_fingertip_velocities.view(self.num_envs, self.num_right_finger_tips * 6),
+            self.cfg.force_torque_obs_scale * self.right_fingertip_force_sensors.view(self.num_envs, self.num_right_finger_tips * 6),
+            (self.right_fingertip_pos - self.right_object_pos.unsqueeze(1)).view(self.num_envs, self.num_right_finger_tips * 3),
+        ]
+        right_ref_act_states = [
+            self.ref_action_norm[:, self.right_joint_indices]
+        ]
+        
+        left_base_states = [
+            # robot joint pos & vel
+            unscale(self.robot_dof_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)[:, self.left_joint_indices],
+            (self.cfg.vel_obs_scale * self.robot_dof_vel)[:, self.left_joint_indices],
+            self.left_ee_pos - self.left_object_pos, # left ee to left object translation
+            # right finger tips
+            self.left_fingertip_pos.view(self.num_envs, self.num_left_finger_tips * 3),
+            self.left_fingertip_quat.view(self.num_envs, self.num_left_finger_tips * 4),
+            self.left_fingertip_velocities.view(self.num_envs, self.num_left_finger_tips * 6),
+            self.cfg.force_torque_obs_scale * self.left_fingertip_force_sensors.view(self.num_envs, self.num_left_finger_tips * 6),
+            (self.left_fingertip_pos - self.left_object_pos.unsqueeze(1)).view(self.num_envs, self.num_left_finger_tips * 3),
+        ]
+        left_ref_act_states = [
+            self.ref_action_norm[:, self.left_joint_indices]
+        ]
+
+
+        if not self.use_object_keypoint:
+            right_object_states = [
+                # object linvel angvel
+                self.right_object_linvel,
+                self.cfg.vel_obs_scale * self.right_object_angvel,
+                # object pose & goal pose
+                self.right_object_pos,
+                self.right_object_rot,
+                self.right_goal_pos,
+                self.right_goal_rot,
+                self.right_object_pos - self.right_goal_pos, # right object to right goal pose translation
+                quat_mul(self.right_object_rot, quat_conjugate(self.right_goal_rot)), # right object to right goal pose rotational error
+            ]
+            left_object_states = [
+                # object linvel angvel
+                self.left_object_linvel,
+                self.cfg.vel_obs_scale * self.left_object_angvel,
+                self.left_object_pos,
+                self.left_object_rot,
+                self.left_goal_pos,
+                self.left_goal_rot,
+                self.left_object_pos - self.left_goal_pos, # left object to left goal pose translation
+                quat_mul(self.left_object_rot, quat_conjugate(self.left_goal_rot)), # left object to left goal pose rotational error
+            ]
+        else:
+            right_object_states = [
+                # object linvel angvel
+                self.right_object_linvel,
+                self.cfg.vel_obs_scale * self.right_object_angvel,
+                self.right_object_keypoint_cur.reshape(self.num_envs, -1),
+                self.right_object_keypoint_goal.reshape(self.num_envs, -1),
+                (self.right_object_keypoint_cur - self.right_object_keypoint_goal).reshape(self.num_envs, -1),
+            ]
+            left_object_states = [
+                # object linvel angvel
+                self.left_object_linvel,
+                self.cfg.vel_obs_scale * self.left_object_angvel,
+                self.left_object_keypoint_cur.reshape(self.num_envs, -1),
+                self.left_object_keypoint_goal.reshape(self.num_envs, -1),
+                (self.left_object_keypoint_cur - self.left_object_keypoint_goal).reshape(self.num_envs, -1),
+            ]
+        
+        if self.use_left_side_reward:
+            states = states + left_base_states + left_object_states
+            if self.use_ref:
+                states = states + left_ref_act_states
+        
+        if self.use_right_side_reward:
+            states = states + right_base_states + right_object_states
+            if self.use_ref:
+                states = states + right_ref_act_states
+        
+        states =  torch.cat(states, dim=-1)
+
+        return states
+
 
     def _get_rewards(self) -> torch.Tensor:
         if self.reward_type == 'sync':
@@ -830,35 +1118,52 @@ class HammerAssemblyEnv(DirectRLEnv):
             successes=self.successes,
             pred_actions=self.pred_actions,
             right_ee_pos=self.right_ee_pos,
+            right_palm_pos=self.left_palm_pos,
             right_finger_tips_pos=self.right_fingertip_pos,
             right_object_init_pos=self.right_object_init_pos,
             right_object_cur_pos=self.right_object_pos,
             right_object_cur_rot=self.right_object_rot,
             right_object_goal_pos=self.right_goal_pos,
             right_object_goal_rot=self.right_goal_rot,
+            right_object_grasp_keypoint_cur=self.right_object_grasp_keypoint_cur,
+            right_object_keypoint_init=self.right_object_keypoint_init,
             right_object_keypoint_cur=self.right_object_keypoint_cur,
             right_object_keypoint_goal=self.right_object_keypoint_goal,
+            right_object_vel=self.right_object_vel,
             right_object_lift_thres=self.right_object_lift_thresh,
+            right_object_not_reached=self.right_object_not_reached,
             right_object_not_lifted=self.right_object_not_lifted,
             right_goal_not_reached=self.right_goal_not_reached,
+            right_step_to_lift_counter=self.right_step_to_lift_counter,
+            right_step_to_reach_counter=self.right_step_to_reach_counter,
             right_object_pos_tolerance=self.right_object_pos_tolerance,
             right_object_rot_tolerance=self.right_object_rot_tolerance,
+            right_finger_dist_tolerance=self.right_finger_dist_tolerance,
             left_ee_pos=self.left_ee_pos,
+            left_palm_pos=self.left_palm_pos,
             left_finger_tips_pos=self.left_fingertip_pos,
             left_object_init_pos=self.left_object_init_pos,
             left_object_cur_pos=self.left_object_pos,
             left_object_cur_rot=self.left_object_rot,
             left_object_goal_pos=self.left_goal_pos,
             left_object_goal_rot=self.left_goal_rot,
+            left_object_grasp_keypoint_cur=self.left_object_grasp_keypoint_cur,
+            left_object_keypoint_init=self.left_object_keypoint_init,
             left_object_keypoint_cur=self.left_object_keypoint_cur,
             left_object_keypoint_goal=self.left_object_keypoint_goal,
+            left_object_vel=self.left_object_vel,
+            left_object_not_reached=self.left_object_not_reached,
             left_object_not_lifted=self.left_object_not_lifted,
             left_object_lift_thres=self.left_object_lift_thresh,
             left_goal_not_reached=self.left_goal_not_reached,
+            left_step_to_lift_counter=self.left_step_to_lift_counter,
+            left_step_to_reach_counter=self.left_step_to_reach_counter,
             left_object_pos_tolerance=self.left_object_pos_tolerance,
             left_object_rot_tolerance=self.left_object_rot_tolerance,
+            left_finger_dist_tolerance=self.left_finger_dist_tolerance,
             object_not_sync_lifted=self.object_not_sync_lifted,
             action_penalty_scale=self.cfg.action_penalty_scale,
+            sync_window_size=self.sync_window_size,
             control_mode=self.control_mode,
             ref_actions=self.ref_action_norm,
             use_ref=self.use_ref,
@@ -866,14 +1171,15 @@ class HammerAssemblyEnv(DirectRLEnv):
             use_right_side_reward=self.use_right_side_reward,
             use_left_side_reward=self.use_left_side_reward,
             use_object_keypoint=self.use_object_keypoint,
-            base_rewards=self.base_rewards
+            base_rewards=self.base_rewards,
+            distance_function=self.distance_function
         )
         
-        if self.debug:
-            self.palm_marker.visualize(self.left_ee_pos+self.scene.env_origins, self.left_ee_quat)
-            self.object_marker.visualize(self.left_object_pos+self.scene.env_origins, self.left_object_rot) 
-            # for idx, marker in enumerate(self.finger_markers):
-            #     marker.visualize(self.left_fingertip_pos[:, idx, :] + self.scene.env_origins, self.left_fingertip_quat[:, idx, :])
+        # if self.debug:
+        #     self.palm_marker.visualize(self.right_ee_pos+self.scene.env_origins, self.right_ee_quat)
+        #     self.object_marker.visualize(self.right_object_pos+self.scene.env_origins, self.right_object_rot) 
+        #     for idx, marker in enumerate(self.finger_markers):
+        #         marker.visualize(self.right_fingertip_pos[:, idx, :] + self.scene.env_origins, self.right_fingertip_quat[:, idx, :])
             
         if self.reward_type == 'sync':
             # Add counter for object lifted
@@ -883,29 +1189,43 @@ class HammerAssemblyEnv(DirectRLEnv):
                 self.lift_step_counter
             )
         elif self.reward_type == 'async':
+            self.right_step_to_lift_counter = torch.where(
+                (log_dict["right_object_lifted"]),
+                self.episode_length_buf,
+                self.right_step_to_lift_counter
+            )
+
+            self.left_step_to_lift_counter = torch.where(
+                (log_dict["left_object_lifted"]),
+                self.episode_length_buf,
+                self.left_step_to_lift_counter
+            )
+
+            self.right_step_to_reach_counter = torch.where(
+                ((log_dict["right_goal_reached"])),
+                self.episode_length_buf,
+                self.right_step_to_reach_counter
+            )
+
+            self.left_step_to_reach_counter = torch.where(
+                ((log_dict["left_goal_reached"])),
+                self.episode_length_buf,
+                self.left_step_to_reach_counter
+            )
+
             if self.use_left_side_reward and self.use_right_side_reward:
                 self.lift_step_counter = torch.where(
-                    (log_dict['right_lift_bonus'] > 0) & (log_dict['left_lift_bonus'] > 0),
+                    log_dict['sync_lift_bonus'] > 0,
                     self.lift_step_counter + 1,
                     self.lift_step_counter
                 )
-                self.goal_reach_step_counter = torch.where(
-                    self.successes > 3,
-                    self.goal_reach_step_counter + 1,
-                    self.goal_reach_step_counter
-                )
-
             else:
                 self.lift_step_counter = torch.where(
                     (log_dict['right_lift_bonus'] > 0) | (log_dict['left_lift_bonus'] > 0),
                     self.lift_step_counter + 1,
                     self.lift_step_counter
                 )
-                self.goal_reach_step_counter = torch.where(
-                    self.successes > 2,
-                    self.goal_reach_step_counter + 1,
-                    self.goal_reach_step_counter
-                )
+                
 
         self.accumulated_rewards = self.accumulated_rewards + total_reward
         self.right_object_not_lifted = torch.where(
@@ -938,15 +1258,36 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.left_goal_not_reached
         )
 
+        self.right_object_not_reached = torch.where(
+            log_dict['right_object_reached_bonus'] > 0,
+            torch.tensor(False),
+            self.right_object_not_reached
+        )
+
+        self.left_object_not_reached = torch.where(
+            log_dict['left_object_reached_bonus'] > 0,
+            torch.tensor(False),
+            self.left_object_not_reached
+        )
+
+
         if "log" not in self.extras:
             self.extras["log"] = dict()
-        self.extras["log"]["consecutive_successes"] = self.successes.mean()
+        self.extras["log"]["common_step_counter"] = float(self.common_step_counter)
+        self.extras["log"]["reset_to_last_success_ratio"] = float(self.reset_to_last_success_ratio)
+        self.extras["log"]["consecutive_successes"] = self.successes
         self.extras["log"]["lift_thresh"] = self.right_object_lift_thresh.mean()
         self.extras["log"]["lift_episode_counter"] = self.lift_episode_counter.mean()
         self.extras["log"]["goal_reach_thresh"] = self.right_object_pos_tolerance.mean()
         self.extras["log"]["goal_reach_episode_counter"] = self.goal_reach_episode_counter.mean()
+
+        # keep tracking of the max consecutive successes for each eval envs
+        self.eval_consecutive_successes = torch.maximum(self.successes[self.eval_env_mask], self.eval_consecutive_successes)
         
         for k in sorted(list(log_dict.keys())):
+            if k not in self.extras["log"].keys():
+                continue
+
             if self.use_left_side_reward and 'left' in k:
                 self.extras["log"][k] = log_dict[k]
             
@@ -955,6 +1296,11 @@ class HammerAssemblyEnv(DirectRLEnv):
             
             if self.use_right_side_reward and self.use_left_side_reward and 'sync' in k:
                 self.extras["log"][k] = log_dict[k]
+
+            # if k not in self.episode_log.keys():
+            #     self.episode_log[k] = [log_dict[k][0].item()]
+            # else:
+            #     self.episode_log[k].append(log_dict[k][0].item())
         
         
         # reset goals if the goal has been reached
@@ -966,16 +1312,18 @@ class HammerAssemblyEnv(DirectRLEnv):
 
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        def _check_unatural_grasp_pose(fingertips_pos, object_pos, init_object_pos, lift_threshold):
-            lift_flag = (object_pos[:, 2] - init_object_pos[2] > lift_threshold)
-            unatural_flag = torch.norm(fingertips_pos - object_pos.unsqueeze(1), p=2, dim=-1).max(dim=1).values > 0.09
-            return lift_flag & unatural_flag
+        def _check_bad_grasp_pose(fingertips_pos, ee_pos, object_pos, object_keypoint_cur, object_pc_cur, lift_threshold):
+            reach_flag = torch.norm(ee_pos - object_pos, p=2, dim=-1) < 0.04
+            lift_flag = object_keypoint_cur[:, :, 2].min(dim=1).values > lift_threshold
+            h2o_dist = (torch.cdist(fingertips_pos, object_pc_cur).min(dim=-1).values).max(dim=-1).values
+            bad_grasp_flag = lift_flag & (h2o_dist > 0.025)
+            return reach_flag & lift_flag & bad_grasp_flag
                     
         self._compute_intermediate_values()
 
         # reset if the action sequence in a chunk are all executed and haven't reached the target object pose
-        right_goal_dist = torch.norm(self.right_object_pos - self.right_goal_pos, p=2, dim=-1)
-        left_goal_dist = torch.norm(self.left_object_pos - self.left_goal_pos, p=2, dim=-1)
+        right_goal_dist = torch.norm(self.right_object_keypoint_cur - self.right_object_keypoint_goal, p=2, dim=-1).max(dim=1).values
+        left_goal_dist = torch.norm(self.left_object_keypoint_cur - self.right_object_keypoint_goal, p=2, dim=-1).max(dim=1).values
 
         not_reach = (right_goal_dist >= self.cfg.pos_success_tolerance) | (left_goal_dist >= self.cfg.pos_success_tolerance)
         
@@ -983,15 +1331,25 @@ class HammerAssemblyEnv(DirectRLEnv):
         fall_terminate = (self.right_object_pos[:, 2] < 0.1) | (self.left_object_pos[:, 2] < 0.1)
         
         # 2. object is picked up in an unatural way
-        unatural_terminate = _check_unatural_grasp_pose(self.right_fingertip_pos, self.right_object_pos, self.right_object_init_pos, self.right_object_lift_thresh) | \
-            _check_unatural_grasp_pose(self.left_fingertip_pos, self.left_object_pos, self.left_object_init_pos, self.left_object_lift_thresh)
-        
+        # @NOTE do we really need this? seems not :(
+        # right_bad_grasp = _check_bad_grasp_pose(
+        #     self.right_fingertip_pos, self.right_ee_pos, 
+        #     self.right_object_pos, self.right_object_keypoint_cur, 
+        #     self.right_object_grasp_keypoint_cur, self.right_object_lift_thresh
+        # )
+        # left_bad_grasp = _check_bad_grasp_pose(
+        #     self.left_fingertip_pos, self.left_ee_pos, 
+        #     self.left_object_pos, self.left_object_keypoint_cur, 
+        #     self.left_object_grasp_keypoint_cur, self.left_object_lift_thresh
+        # )
+        # bad_grasp_terminate = right_bad_grasp | left_bad_grasp
+            
         # Check if any envs succeed all chunks
         max_success_reached = self.successes >= self.max_consecutive_success
 
         time_out = self.ref_chunk_step_idx[:, 1] >= self.ref_chunk_max_steps[self.ref_chunk_step_idx[:, 0]] - 1
             
-        return fall_terminate | unatural_terminate, not_reach, time_out, max_success_reached
+        return fall_terminate, not_reach, time_out, max_success_reached
 
 
     def _reset_idx(self, env_ids: Sequence[int] | None, keep_last_success=False):
@@ -1055,11 +1413,8 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.lift_episode_counter[env_ids]
         )
 
-        self.goal_reach_episode_counter[env_ids] = torch.where(
-            self.goal_reach_step_counter[env_ids] > 0,
-            self.goal_reach_episode_counter[env_ids] + 1,
-            self.goal_reach_episode_counter[env_ids]
-        )
+        # Update the number of consecutive success for the reset eval envs
+        eval_env_ids = env_ids[env_ids < self.num_eval_envs]
         
         self._compute_curriculum(env_ids)
 
@@ -1071,9 +1426,18 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.right_object_not_lifted[env_ids] = torch.tensor(True)
         self.left_object_not_lifted[env_ids] = torch.tensor(True)
         self.object_not_sync_lifted[env_ids] = torch.tensor(True)
-        
         self.right_goal_not_reached[env_ids] = torch.tensor(True)
         self.left_goal_not_reached[env_ids] = torch.tensor(True)
+
+        self.right_object_not_reached[env_ids] = torch.tensor(True)
+        self.left_object_not_reached[env_ids] = torch.tensor(True)
+
+        self.right_step_to_reach_counter[env_ids] = 0
+        self.left_step_to_reach_counter[env_ids] = 0
+        self.right_step_to_lift_counter[env_ids] = 0
+        self.left_step_to_lift_counter[env_ids] = 0
+
+        self.eval_consecutive_successes[eval_env_ids] = 0.0
         
         # update goal pose and markers
         self.right_goal_rot[env_ids] = self.right_ref_targets[self.ref_chunk_step_idx[env_ids, 0], 3:7]
@@ -1089,13 +1453,15 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.accumulated_rewards[env_ids] = 0
 
         # reset object
-        _reset_object(self.right_object, add_noise=True)
-        _reset_object(self.left_object, add_noise=True)
+        _reset_object(self.right_object, add_noise=False)
+        _reset_object(self.left_object, add_noise=False)
 
         # reset hand
         _reset_robot(self.robot)
 
         self._compute_intermediate_values()
+
+        # plot_curve(self.episode_log)
 
 
     def _reset_to(
@@ -1136,6 +1502,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         
         self.right_goal_not_reached[env_ids] = torch.tensor(True)
         self.left_goal_not_reached[env_ids] = torch.tensor(True)
+        self.right_step_to_reach_counter[env_ids] = 0
+        self.left_step_to_reach_counter[env_ids] = 0
         
         self.right_goal_rot[env_ids] = self.right_ref_targets[self.ref_chunk_step_idx[env_ids, 0], 3:7]
         self.right_goal_pos[env_ids] = self.right_ref_targets[self.ref_chunk_step_idx[env_ids, 0], :3]
@@ -1143,7 +1511,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_goal_rot[env_ids] = self.left_ref_targets[self.ref_chunk_step_idx[env_ids, 0], 3:7]
         self.left_goal_pos[env_ids] = self.left_ref_targets[self.ref_chunk_step_idx[env_ids, 0], :3]
 
-        self.reset_goal_buf[env_ids] = 0
+        # self.reset_goal_buf[env_ids] = 0
         self.accumulated_rewards[env_ids] = self.base_rewards[env_ids] # to prevent repeated accumulation
         
         # set the state
@@ -1158,55 +1526,56 @@ class HammerAssemblyEnv(DirectRLEnv):
 
         self._compute_intermediate_values()
         
-    
 
     def _reset_envs(
             self, 
-            terminate_ids: Sequence[int] | None, 
-            out_of_reach_ids: Sequence[int] | None, 
-            max_success_reached_ids: Sequence[int] | None
+            terminate: torch.Tensor, 
+            out_of_reach: torch.Tensor, 
+            max_success_reached: torch.Tensor
     ):
-        # 1. reset all envs that reaches max consuctive success to the inital state
+        reset_to_init_ids = []
+        reset_to_last_success_ids = []
+
+        # 1. reset all envs that reaches max consuctive success to the initial state
+        if torch.any(max_success_reached):
+            reset_to_init_ids.append(max_success_reached.nonzero(as_tuple=False).squeeze(-1))
+
         # 2. reset all terminated envs to the inital state
-        # get env_ids where agent successfully reached at least one target
-        succeed_env_ids = self.successes.nonzero(as_tuple=False).squeeze(-1)
-        in_mask = torch.isin(out_of_reach_ids, succeed_env_ids, assume_unique=True)
-        
-        # env_ids that need to be reset and have at least one success
-        succeed_reset_env_ids = out_of_reach_ids[in_mask]
-        non_succeed_env_ids = out_of_reach_ids[~in_mask]
-        
-        if self.plot_delta_qpos:
-            self.delta_qpos = torch.stack(self.delta_qpos, dim=0).detach().cpu().numpy()
-            print(self.delta_qpos.shape)
-            plot(self.delta_qpos, self.robot.joint_names, output_f='./delta_qpos.png')
-        
-        self.delta_qpos = []
-        
-        if succeed_reset_env_ids.shape[0] > 0:
-            x_percent = 0.0 # @TODO set this to 0.0 in eval envs
-            num_samples = int(math.ceil(succeed_reset_env_ids.shape[0] * x_percent))
+        if torch.any(terminate):
+            reset_to_init_ids.append(terminate.nonzero(as_tuple=False).squeeze(-1))
+
+        # 3. not reached current goal, but is eval env
+        eval_out_of_reach_mask = (out_of_reach & self.eval_env_mask)
+        if torch.any(eval_out_of_reach_mask):
+            reset_to_init_ids.append(eval_out_of_reach_mask.nonzero(as_tuple=False).squeeze(-1))
+
+        had_succeed_out_of_reach_mask = (out_of_reach & (~self.eval_env_mask)) & (self.successes > 0)
+        non_succeed_out_of_reach_mask = (out_of_reach & (~self.eval_env_mask)) & (self.successes == 0)
+        had_succeed_out_of_reach_ids = had_succeed_out_of_reach_mask.nonzero(as_tuple=False).squeeze(-1)
+        non_succeed_out_of_reach_ids = non_succeed_out_of_reach_mask.nonzero(as_tuple=False).squeeze(-1)
+        if len(non_succeed_out_of_reach_ids) > 0:
+            reset_to_init_ids.append(non_succeed_out_of_reach_ids)
+        if len(had_succeed_out_of_reach_ids) > 0:
+            num_samples = int(math.ceil(had_succeed_out_of_reach_ids.shape[0] * self.reset_to_last_success_ratio))
 
             # Get random indices without replacement
-            perm = torch.randperm(succeed_reset_env_ids.shape[0])
-            reset_from_last_ids = succeed_reset_env_ids[perm[:num_samples]]
-            reset_from_begin_ids = succeed_reset_env_ids[perm[num_samples:]]
-            
+            perm = torch.randperm(had_succeed_out_of_reach_ids.shape[0])
+            reset_to_init_ids.append(had_succeed_out_of_reach_ids[perm[num_samples:]])
+            reset_to_last_success_ids.append(had_succeed_out_of_reach_ids[perm[:num_samples]])
+        
+
+        if len(reset_to_init_ids) > 0:
+            reset_to_init_ids = torch.cat(reset_to_init_ids)
+            self._reset_idx(reset_to_init_ids)
+        
+        if len(reset_to_last_success_ids) > 0:
+            reset_to_last_success_ids = torch.cat(reset_to_last_success_ids) 
             self._reset_to(
                 self.last_success_state, 
-                reset_from_last_ids, 
+                reset_to_last_success_ids, 
                 seed=None, 
                 is_relative=False
             )
-            
-            reset_from_begin_ids = torch.cat([terminate_ids, non_succeed_env_ids, max_success_reached_ids, reset_from_begin_ids])
-            
-            # reset envs from the beginning
-            if reset_from_begin_ids.shape[0] > 0:
-                self._reset_idx(reset_from_begin_ids)
-        
-        else:
-            self._reset_idx(torch.cat([terminate_ids, out_of_reach_ids, max_success_reached_ids]))
     
 
     def _reset_target_pose(self, env_ids):
@@ -1241,38 +1610,67 @@ class HammerAssemblyEnv(DirectRLEnv):
     
     
     def _compute_curriculum(self, env_ids):
+
+        # object lift counter
         self.right_object_lift_thresh[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 50,
-            torch.clamp(self.right_object_lift_thresh[env_ids] + 0.005, max=0.075),
+            self.lift_episode_counter[env_ids] > 20,
+            torch.clamp(self.right_object_lift_thresh[env_ids] + 0.005, max=0.213),
             self.right_object_lift_thresh[env_ids]
         )
         
         self.left_object_lift_thresh[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 50,
-            torch.clamp(self.left_object_lift_thresh[env_ids] + 0.005, max=0.075),
+            self.lift_episode_counter[env_ids] > 20,
+            torch.clamp(self.left_object_lift_thresh[env_ids] + 0.005, max=0.185),
             self.left_object_lift_thresh[env_ids]
         )
-        
+
+        # finger contact distance
+        self.right_finger_dist_tolerance[env_ids] = torch.where(
+            self.lift_episode_counter[env_ids] > 20,
+            torch.clamp(self.right_finger_dist_tolerance[env_ids] - 0.005, min=0.05),
+            self.right_finger_dist_tolerance[env_ids]
+        )
+
+        self.left_finger_dist_tolerance[env_ids] = torch.where(
+            self.lift_episode_counter[env_ids] > 20,
+            torch.clamp(self.left_finger_dist_tolerance[env_ids] - 0.005, min=0.05),
+            self.left_finger_dist_tolerance[env_ids]
+        )
+
         self.lift_episode_counter[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 50,
+            self.lift_episode_counter[env_ids] > 20,
             0,
             self.lift_episode_counter[env_ids]
         )
+        
+
+        # reduce the reset_to_last_success_ratio
+        max_steps = 16 * 40000 # rollout lenght = 16, max_iterations = 40000
+        warm_up_steps = 16 * 10000 if self.use_left_side_reward and self.use_right_side_reward else 16 * 2000
+        interval = 16 * 2500 if self.use_left_side_reward and self.use_right_side_reward else 16 * 1000
+
+        if (self.common_step_counter > warm_up_steps) and ((self.common_step_counter+1) % (16 * 5000) == 0):
+            self.reset_to_last_success_ratio = max(self.reset_to_last_success_ratio-0.05, 0.05)
+
+        # reduce the threshold for reaching the sub goal
+        mean_eval_consecutive_successes = self.eval_consecutive_successes.mean() # [num_eval_envs, ep_length]
+        if mean_eval_consecutive_successes > self.max_consecutive_success - 1:
+            self.goal_reach_episode_counter[env_ids] += 1
 
         self.right_object_pos_tolerance[env_ids] = torch.where(
-            self.goal_reach_episode_counter[env_ids] > 50,
+            self.goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
             torch.clamp(self.right_object_pos_tolerance[env_ids] - 0.005, min=0.005),
             self.right_object_pos_tolerance[env_ids]
         )
 
         self.left_object_pos_tolerance[env_ids] = torch.where(
-            self.goal_reach_episode_counter[env_ids] > 50,
+            self.goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
             torch.clamp(self.left_object_pos_tolerance[env_ids] - 0.005, min=0.005),
             self.left_object_pos_tolerance[env_ids]
         )
 
         self.goal_reach_episode_counter[env_ids] = torch.where(
-            self.goal_reach_episode_counter[env_ids] > 50,
+            self.goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
             0,
             self.goal_reach_episode_counter[env_ids]
         )
@@ -1304,41 +1702,91 @@ def rotation_distance(object_rot, target_rot):
     return 2.0 * torch.asin(torch.clamp(torch.norm(quat_diff[:, 1:4], p=2, dim=-1), max=1.0))  # changed quat convention
 
 
+@torch.jit.script
+def check_goal_reached(
+    cur_pos: torch.Tensor, tgt_pos: torch.Tensor, 
+    cur_rot: torch.Tensor, tgt_rot: torch.Tensor, 
+    pos_tolerance: torch.Tensor, rot_tolerance: float
+):
+    pos_dist = torch.norm(cur_pos - tgt_pos, p=2, dim=-1)
+    rot_dist = rotation_distance(cur_rot, tgt_rot)
+
+    return (pos_dist < pos_tolerance) & (rot_dist < rot_tolerance), pos_dist, rot_dist
+
+@torch.jit.script
+def check_goal_reached_keypoint(cur_keypoint: torch.Tensor, tgt_keypoint: torch.Tensor, pos_tolerance: torch.Tensor):
+    dist = torch.norm(cur_keypoint - tgt_keypoint, p=2, dim=-1).max(dim=1).values
+
+    return (dist < pos_tolerance), dist
+
+@torch.jit.script
+def _mse_distance_reward(pos1: torch.Tensor, pos2: torch.Tensor, scale: float = 0.1) -> tuple[torch.Tensor, torch.Tensor]:
+    dist = torch.norm(pos1-pos2, p=2, dim=-1)
+    rew = (1.0 / (dist + 1.0))
+    rew *= rew
+
+    return dist, scale * rew
+
+@torch.jit.script
+def _tanh_distance_reward(pos1: torch.Tensor, pos2: torch.Tensor, std: float = 0.1, scale: float = 1.0) -> tuple[torch.Tensor, torch.Tensor]:
+    dist = torch.norm(pos1-pos2, p=2, dim=-1)
+    rew = 1 - torch.tanh(dist / std)
+
+    return dist, scale * rew
+
+
 # @torch.jit.script
 def compute_rewards_sync(
     reset_goal_buf: torch.Tensor,
     successes: torch.Tensor,
     pred_actions: torch.Tensor,
     right_ee_pos: torch.Tensor,
+    right_palm_pos: torch.Tensor,
     right_finger_tips_pos: torch.Tensor,
     right_object_init_pos: torch.Tensor,
     right_object_cur_pos: torch.Tensor,
     right_object_cur_rot: torch.Tensor,
     right_object_goal_pos: torch.Tensor,
     right_object_goal_rot: torch.Tensor,
+    right_object_grasp_keypoint_cur: torch.Tensor,
+    right_object_keypoint_init: torch.Tensor,
     right_object_keypoint_cur: torch.Tensor,
     right_object_keypoint_goal: torch.Tensor,
-    right_object_not_lifted: torch.Tensor,
+    right_object_vel: torch.Tensor,
     right_object_lift_thres: torch.Tensor,
+    right_object_not_lifted: torch.Tensor,
+    right_object_not_reached: torch.Tensor,
     right_goal_not_reached: torch.Tensor,
-    right_object_pos_tolerance: float,
+    right_step_to_lift_counter: torch.Tensor,
+    right_step_to_reach_counter: torch.Tensor,
+    right_object_pos_tolerance: torch.Tensor,
     right_object_rot_tolerance: float,
+    right_finger_dist_tolerance: torch.Tensor,
     left_ee_pos: torch.Tensor,
+    left_palm_pos: torch.Tensor,
     left_finger_tips_pos: torch.Tensor,
     left_object_init_pos: torch.Tensor,
     left_object_cur_pos: torch.Tensor,
     left_object_cur_rot: torch.Tensor,
     left_object_goal_pos: torch.Tensor,
     left_object_goal_rot: torch.Tensor,
+    left_object_grasp_keypoint_cur: torch.Tensor,
+    left_object_keypoint_init: torch.Tensor,
     left_object_keypoint_cur: torch.Tensor,
     left_object_keypoint_goal: torch.Tensor,
-    left_object_not_lifted: torch.Tensor,
+    left_object_vel: torch.Tensor,
     left_object_lift_thres: torch.Tensor,
+    left_object_not_reached: torch.Tensor,
+    left_object_not_lifted: torch.Tensor,
     left_goal_not_reached: torch.Tensor,
-    left_object_pos_tolerance: float,
+    left_step_to_lift_counter: torch.Tensor,
+    left_step_to_reach_counter: torch.Tensor,
+    left_object_pos_tolerance: torch.Tensor,
     left_object_rot_tolerance: float,
+    left_finger_dist_tolerance: torch.Tensor,
     object_not_sync_lifted: torch.Tensor,
     action_penalty_scale: float,
+    sync_window_size: int, 
     control_mode: str,
     ref_actions: torch.Tensor,
     use_ref: bool,
@@ -1347,14 +1795,15 @@ def compute_rewards_sync(
     use_left_side_reward: bool,
     use_object_keypoint: bool,
     base_rewards: torch.Tensor,
+    distance_function: str,
 ):
-    def _check_goal_reached(cur_pos, tgt_pos, cur_rot, tgt_rot, pos_tolerance, rot_tolerance):
+    def check_goal_reached(cur_pos, tgt_pos, cur_rot, tgt_rot, pos_tolerance, rot_tolerance):
         pos_dist = torch.norm(cur_pos - tgt_pos, p=2, dim=-1)
         rot_dist = rotation_distance(cur_rot, tgt_rot)
 
         return (pos_dist < pos_tolerance) & (rot_dist < rot_tolerance), pos_dist, rot_dist
     
-    def _check_goal_reached_keypoint(cur_keypoint, tgt_keypoint, pos_tolerance):
+    def check_goal_reached_keypoint(cur_keypoint, tgt_keypoint, pos_tolerance):
         dist = torch.norm(cur_keypoint - tgt_keypoint, p=2, dim=-1).max(dim=1).values
 
         return (dist < pos_tolerance), dist
@@ -1396,7 +1845,7 @@ def compute_rewards_sync(
 
     # 3. Goal reach bonus
     if not use_object_keypoint:
-        right_goal_reached, right_goal_pos_dist, right_goal_rot_dist = _check_goal_reached(
+        right_goal_reached, right_goal_pos_dist, right_goal_rot_dist = check_goal_reached(
             right_object_cur_pos,
             right_object_goal_pos,
             right_object_cur_rot,
@@ -1404,7 +1853,7 @@ def compute_rewards_sync(
             right_object_pos_tolerance,
             right_object_rot_tolerance
         )
-        left_goal_reached, left_goal_pos_dist, left_goal_rot_dist = _check_goal_reached(
+        left_goal_reached, left_goal_pos_dist, left_goal_rot_dist = check_goal_reached(
             left_object_cur_pos,
             left_object_goal_pos,
             left_object_cur_rot,
@@ -1419,13 +1868,13 @@ def compute_rewards_sync(
         log_dict['left_goal_pos_dist'] = left_goal_pos_dist
         log_dict['left_goal_rot_dist'] = left_goal_rot_dist
     else:
-        right_goal_reached, right_goal_dist = _check_goal_reached_keypoint(
+        right_goal_reached, right_goal_dist = check_goal_reached_keypoint(
             right_object_keypoint_cur,
             right_object_keypoint_goal,
             right_object_pos_tolerance
         )
 
-        left_goal_reached, left_goal_dist = _check_goal_reached_keypoint(
+        left_goal_reached, left_goal_dist = check_goal_reached_keypoint(
             left_object_keypoint_cur,
             left_object_keypoint_goal,
             left_object_pos_tolerance
@@ -1487,35 +1936,52 @@ def compute_rewards_async(
     successes: torch.Tensor,
     pred_actions: torch.Tensor,
     right_ee_pos: torch.Tensor,
+    right_palm_pos: torch.Tensor,
     right_finger_tips_pos: torch.Tensor,
     right_object_init_pos: torch.Tensor,
     right_object_cur_pos: torch.Tensor,
     right_object_cur_rot: torch.Tensor,
     right_object_goal_pos: torch.Tensor,
     right_object_goal_rot: torch.Tensor,
+    right_object_grasp_keypoint_cur: torch.Tensor,
+    right_object_keypoint_init: torch.Tensor,
     right_object_keypoint_cur: torch.Tensor,
     right_object_keypoint_goal: torch.Tensor,
+    right_object_vel: torch.Tensor,
     right_object_lift_thres: torch.Tensor,
     right_object_not_lifted: torch.Tensor,
+    right_object_not_reached: torch.Tensor,
     right_goal_not_reached: torch.Tensor,
-    right_object_pos_tolerance: float,
+    right_step_to_lift_counter: torch.Tensor,
+    right_step_to_reach_counter: torch.Tensor,
+    right_object_pos_tolerance: torch.Tensor,
     right_object_rot_tolerance: float,
+    right_finger_dist_tolerance: torch.Tensor,
     left_ee_pos: torch.Tensor,
+    left_palm_pos: torch.Tensor,
     left_finger_tips_pos: torch.Tensor,
     left_object_init_pos: torch.Tensor,
     left_object_cur_pos: torch.Tensor,
     left_object_cur_rot: torch.Tensor,
     left_object_goal_pos: torch.Tensor,
     left_object_goal_rot: torch.Tensor,
+    left_object_grasp_keypoint_cur: torch.Tensor,
+    left_object_keypoint_init: torch.Tensor,
     left_object_keypoint_cur: torch.Tensor,
     left_object_keypoint_goal: torch.Tensor,
+    left_object_vel: torch.Tensor,
     left_object_lift_thres: torch.Tensor,
+    left_object_not_reached: torch.Tensor,
     left_object_not_lifted: torch.Tensor,
     left_goal_not_reached: torch.Tensor,
-    left_object_pos_tolerance: float,
+    left_step_to_lift_counter: torch.Tensor,
+    left_step_to_reach_counter: torch.Tensor,
+    left_object_pos_tolerance: torch.Tensor,
     left_object_rot_tolerance: float,
+    left_finger_dist_tolerance: torch.Tensor,
     object_not_sync_lifted: torch.Tensor,
     action_penalty_scale: float,
+    sync_window_size: int, 
     control_mode: str,
     ref_actions: torch.Tensor,
     use_ref: bool,
@@ -1523,79 +1989,124 @@ def compute_rewards_async(
     use_right_side_reward: bool,
     use_left_side_reward: bool,
     use_object_keypoint: bool,
-    base_rewards: torch.Tensor
+    base_rewards: torch.Tensor,
+    distance_function: str,
 ):
     
     """
     In this reward function, we separate the lift bonus and goal reaching bonus for right and left hands
     """
-    def _check_goal_reached(cur_pos, tgt_pos, cur_rot, tgt_rot, pos_tolerance, rot_tolerance):
-        pos_dist = torch.norm(cur_pos - tgt_pos, p=2, dim=-1)
-        rot_dist = rotation_distance(cur_rot, tgt_rot)
-
-        return (pos_dist < pos_tolerance) & (rot_dist < rot_tolerance), pos_dist, rot_dist
-
-    def _check_goal_reached_keypoint(cur_keypoint, tgt_keypoint, pos_tolerance):
-        dist = torch.norm(cur_keypoint - tgt_keypoint, p=2, dim=-1).max(dim=1).values
-
-        return (dist < pos_tolerance), dist
-
     log_dict = {}
     
     # Only for pos control mode
     # 0. pred actions vs ref actions
-    if control_mode == 'pos' and use_ref:
-        act_dist = torch.nn.functional.mse_loss(ref_actions, pred_actions, reduction='none') # [num_envs, num_dofs]
-        act_dist_reward = (1.0 / (act_dist.mean(dim=-1) + 1.0))
-        act_dist_reward *= act_dist_reward
-        act_dist_reward *= 10
-    else:
-        act_dist = torch.zeros_like(successes, dtype=successes.dtype, device=successes.device)
-        act_dist_reward = torch.zeros_like(successes, dtype=successes.dtype, device=successes.device)
-    # act_dist_reward = torch.zeros_like(successes, dtype=successes.dtype, device=successes.device)
+    # if control_mode == 'pos' and use_ref:
+    #     act_dist = torch.nn.functional.mse_loss(ref_actions, pred_actions, reduction='none') # [num_envs, num_dofs]
+    #     act_dist_reward = (1.0 / (act_dist.mean(dim=-1) + 1.0))
+    #     act_dist_reward *= act_dist_reward
+    #     act_dist_reward *= 10
+    # else:
+    #     act_dist = torch.zeros_like(successes, dtype=successes.dtype, device=successes.device)
+    #     act_dist_reward = torch.zeros_like(successes, dtype=successes.dtype, device=successes.device)
 
     # Sparse reward version,
-    # 1. palm to object reward
+    # Stage-1, reaching
     right_ee2o_dist = torch.norm(right_ee_pos - right_object_cur_pos, p=2, dim=-1)
-    right_h2o_dist = torch.norm(right_finger_tips_pos - right_object_cur_pos.unsqueeze(1), p=2, dim=-1).max(dim=1).values
-    right_h2o_dist_reward = (1.0 / (right_h2o_dist + right_ee2o_dist + 1.0))
-    right_h2o_dist_reward *= right_h2o_dist_reward
-    
-    left_ee2o_dist = torch.norm(left_ee_pos - left_object_cur_pos, p=2, dim=-1)
-    left_h2o_dist = torch.norm(left_finger_tips_pos - left_object_cur_pos.unsqueeze(1), p=2, dim=-1).max(dim=1).values
-    left_h2o_dist_reward = (1.0 / (left_h2o_dist + left_ee2o_dist + 1.0))
-    left_h2o_dist_reward *= left_h2o_dist_reward
-    
-    log_dict['right_h2o_dist_reward'] = right_h2o_dist_reward
-    log_dict['left_h2o_dist_reward'] = left_h2o_dist_reward
-    
-    rewards = act_dist_reward + right_h2o_dist_reward + left_h2o_dist_reward
-    
+    right_ee2o_reward = (1.0 / (right_ee2o_dist + 1.0))
+    right_ee2o_reward *= right_ee2o_reward
 
-    # 2. Object lift bonus
-    right_object_lifted = ((right_object_cur_pos[:, 2]-right_object_init_pos[2]) > right_object_lift_thres) & \
-                            (right_ee2o_dist < 0.075) & (right_h2o_dist < 0.75)
-    right_lift_bonus = torch.where(
-        right_object_lifted & right_object_not_lifted,
+    right_object_reached = (right_ee2o_dist < 0.035) & (right_ee_pos[:, 2] < right_object_cur_pos[:, 2])
+    right_object_reached_bonus = torch.where(
+        right_object_reached & right_object_not_reached,
         torch.zeros_like(successes)+50,
         torch.zeros_like(successes)
     ).float()
+
+    left_ee2o_dist = torch.norm(left_ee_pos - left_object_cur_pos, p=2, dim=-1)
+    left_ee2o_reward = (1.0 / (left_ee2o_dist + 1.0))
+    left_ee2o_reward *= left_ee2o_reward
+    left_object_reached = (left_ee2o_dist < 0.045) & (left_ee_pos[:, 2] < left_object_cur_pos[:, 2])
+    left_object_reached_bonus = torch.where(
+        left_object_reached & left_object_not_reached,
+        torch.zeros_like(successes)+50,
+        torch.zeros_like(successes)
+    ).float()
+
+    log_dict['right_ee2o_dist'] = right_ee2o_dist
+    log_dict['right_ee2o_dist_reward'] = right_ee2o_reward
+    log_dict["right_object_reached"] = right_object_reached
+    log_dict["right_object_reached_bonus"] = right_object_reached_bonus
+    log_dict['left_ee2o_dist'] = left_ee2o_dist
+    log_dict['left_ee2o_dist_reward'] = left_ee2o_reward
+    log_dict["left_object_reached"] = left_object_reached
+    log_dict["left_object_reached_bonus"] = left_object_reached_bonus
+
     
-    left_object_lifted = ((left_object_cur_pos[:, 2]-left_object_init_pos[2]) > left_object_lift_thres)  & \
-                            (left_ee2o_dist < 0.075) & (left_h2o_dist < 0.75)
+    # stage-2, grasping and lifting
+
+    right_h2o_dist = torch.cdist(right_finger_tips_pos, right_object_grasp_keypoint_cur).min(dim=-1).values
+    right_h2o_dist = right_h2o_dist.max(dim=-1).values
+    right_h2o_dist_reward = (1.0 / (right_h2o_dist + 1.0))
+    right_h2o_dist_reward *= right_h2o_dist_reward
+    right_h2o_dist_reward *= 2
+    right_h2o_dist_reward = torch.where(
+        right_object_reached,
+        right_h2o_dist_reward,
+        0.0
+    )
+
+    left_h2o_dist = torch.cdist(left_finger_tips_pos, left_object_grasp_keypoint_cur).min(dim=-1).values
+    left_h2o_dist = left_h2o_dist.max(dim=-1).values
+    left_h2o_dist_reward = (1.0 / (left_h2o_dist + 1.0))
+    left_h2o_dist_reward *= left_h2o_dist_reward
+    left_h2o_dist_reward *= 2
+    left_h2o_dist_reward = torch.where(
+        left_object_reached,
+        left_h2o_dist_reward,
+        0.0
+    )
+    log_dict['right_h2o_dist'] = right_h2o_dist
+    log_dict['right_h2o_dist_reward'] = right_h2o_dist_reward
+    log_dict['left_h2o_dist'] = left_h2o_dist
+    log_dict['left_h2o_dist_reward'] = left_h2o_dist_reward
+    
+    if use_left_side_reward and use_right_side_reward:
+        rewards = right_ee2o_reward  + right_h2o_dist_reward + right_object_reached_bonus\
+              + left_ee2o_reward + left_h2o_dist_reward + left_object_reached_bonus 
+    elif use_left_side_reward:
+        rewards = left_ee2o_reward + left_h2o_dist_reward + left_object_reached_bonus 
+    else:
+        rewards = right_ee2o_reward + right_h2o_dist_reward + right_object_reached_bonus
+    
+    
+    right_object_lifted = (right_object_keypoint_cur[:, :, 2].min(dim=1).values > right_object_lift_thres) & \
+                            (right_ee2o_dist < 0.04) & (right_h2o_dist < right_finger_dist_tolerance)
+    right_lift_bonus = torch.where(
+        right_object_lifted & right_object_not_lifted,
+        torch.zeros_like(successes)+100,
+        torch.zeros_like(successes)
+    ).float()
+    
+    left_object_lifted = (left_object_keypoint_cur[:, :, 2].min(dim=1).values > left_object_lift_thres)  & \
+                            (left_ee2o_dist < 0.04) & (left_h2o_dist < left_finger_dist_tolerance)
     left_lift_bonus = torch.where(
         left_object_lifted & left_object_not_lifted, # assign the lift-up bonus once
-        torch.zeros_like(successes)+50,
+        torch.zeros_like(successes)+100,
         torch.zeros_like(successes)
     ).float()
 
     log_dict['right_lift_bonus'] = right_lift_bonus
     log_dict['left_lift_bonus'] = left_lift_bonus
+    log_dict['right_object_lifted'] = right_object_lifted
+    log_dict['left_object_lifted'] = left_object_lifted
     
-    sync_lifted = (right_object_lifted & left_object_lifted) & object_not_sync_lifted
+    # Sync lifting bonus: right object and left object are both lifted in the acceptable time window
+    # sync_lifted = (right_object_lifted & left_object_lifted) & object_not_sync_lifted
+    sync_lifted = (right_object_lifted & left_object_lifted) & (torch.abs(right_step_to_lift_counter - left_step_to_lift_counter) < sync_window_size) & \
+                        object_not_sync_lifted
     sync_lift_bonus = torch.where(
         sync_lifted,
-        torch.zeros_like(successes)+100,
+        torch.zeros_like(successes)+400,
         torch.zeros_like(successes)
     )
     
@@ -1603,12 +2114,12 @@ def compute_rewards_async(
         object_lifted = right_object_lifted & left_object_lifted
     else:
         object_lifted = left_object_lifted | right_object_lifted
-    
+
     log_dict['sync_lift_bonus'] = sync_lift_bonus
 
-    # 3. Goal reach bonus
+    # Stage-2, reaching the sub-goals
     if not use_object_keypoint:
-        right_goal_reached, right_goal_pos_dist, right_goal_rot_dist = _check_goal_reached(
+        right_goal_reached, right_goal_pos_dist, right_goal_rot_dist = check_goal_reached(
             right_object_cur_pos,
             right_object_goal_pos,
             right_object_cur_rot,
@@ -1616,7 +2127,7 @@ def compute_rewards_async(
             right_object_pos_tolerance,
             right_object_rot_tolerance
         )
-        left_goal_reached, left_goal_pos_dist, left_goal_rot_dist = _check_goal_reached(
+        left_goal_reached, left_goal_pos_dist, left_goal_rot_dist = check_goal_reached(
             left_object_cur_pos,
             left_object_goal_pos,
             left_object_cur_rot,
@@ -1631,13 +2142,13 @@ def compute_rewards_async(
         log_dict['left_goal_pos_dist'] = left_goal_pos_dist
         log_dict['left_goal_rot_dist'] = left_goal_rot_dist
     else:
-        right_goal_reached, right_goal_dist = _check_goal_reached_keypoint(
+        right_goal_reached, right_goal_dist = check_goal_reached_keypoint(
             right_object_keypoint_cur,
             right_object_keypoint_goal,
             right_object_pos_tolerance
         )
 
-        left_goal_reached, left_goal_dist = _check_goal_reached_keypoint(
+        left_goal_reached, left_goal_dist = check_goal_reached_keypoint(
             left_object_keypoint_cur,
             left_object_keypoint_goal,
             left_object_pos_tolerance
@@ -1645,63 +2156,88 @@ def compute_rewards_async(
         log_dict['right_goal_dist'] = right_goal_dist
         log_dict['left_goal_dist'] = left_goal_dist
     
-    # @TODO
-    # removed rot dist for testing
+    # Goal distance reward: only takes into effect when the object are lifted. 
+    # @TODO switch to tanh-based distance rewards?
     right_goal_dist_reward = (1.0 / (right_goal_dist + 1.0))
     right_goal_dist_reward *= right_goal_dist_reward
-    right_goal_dist_reward *= 2
+    right_goal_dist_reward *= 15
     right_goal_dist_reward = torch.where(
-        object_lifted, 
+        right_object_lifted, 
         right_goal_dist_reward,
         torch.zeros_like(right_goal_dist_reward)
     )
     
     left_goal_dist_reward = (1.0 / (left_goal_dist + 1.0))
     left_goal_dist_reward *= left_goal_dist_reward
-    left_goal_dist_reward *= 2
+    left_goal_dist_reward *= 15
     left_goal_dist_reward = torch.where(
-        object_lifted, 
+        left_object_lifted, 
         left_goal_dist_reward,
         torch.zeros_like(left_goal_dist_reward)
     )
 
     right_goal_reached_bonus = torch.where(
         (right_goal_reached & object_lifted) & right_goal_not_reached,
-        torch.zeros_like(successes) + 200,
+        torch.zeros_like(successes) + 4000,
         torch.zeros_like(successes)
     ).float()
     
     left_goal_reached_bonus = torch.where(
         (left_goal_reached & object_lifted) & left_goal_not_reached,
-        torch.zeros_like(successes) + 200,
+        torch.zeros_like(successes) + 4000,
         torch.zeros_like(successes)
     ).float()
+    log_dict['right_goal_reached'] = right_goal_reached
     log_dict['right_goal_dist_reward'] = right_goal_dist_reward
     log_dict['right_goal_reached_bonus'] = right_goal_reached_bonus
+    log_dict['left_goal_reached'] = left_goal_reached
     log_dict['left_goal_dist_reward'] = left_goal_dist_reward
     log_dict['left_goal_reached_bonus'] = left_goal_reached_bonus
+
+    # penalty for moving the object after it reaches the goal
+    right_move_penalty_after_reach = torch.where(
+        (~right_goal_not_reached) & (~right_goal_reached),
+        -50 * (right_goal_dist + torch.norm(right_object_vel, dim=-1, p=2)),
+        0.0
+    )
+
+    left_move_penalty_after_reach = torch.where(
+        (~left_goal_not_reached) & (~left_goal_reached),
+        -50 * (left_goal_dist + torch.norm(left_object_vel, dim=-1, p=2)),
+        0.0
+    )
+
+    log_dict["right_move_penalty"] = right_move_penalty_after_reach
+    log_dict["left_move_penalty"] = left_move_penalty_after_reach
+    log_dict["right_step_to_reach_counter"] = right_step_to_reach_counter
+    log_dict["left_step_to_reach_counter"] = left_step_to_reach_counter
+    log_dict["right_step_to_lift_counter"] = right_step_to_lift_counter
+    log_dict["left_step_to_lift_counter"] = left_step_to_lift_counter
     
+    # sync_goal_reached_bonus = torch.where(
+    #     right_goal_reached & left_goal_reached,
+    #     torch.zeros_like(successes) + 2000,
+    #     torch.zeros_like(successes)
+    # )
+
     sync_goal_reached_bonus = torch.where(
-        right_goal_reached & left_goal_reached,
-        torch.zeros_like(successes) + 1000,
+        (right_goal_reached & left_goal_reached) & (torch.abs(right_step_to_reach_counter - left_step_to_reach_counter) < sync_window_size),
+        torch.zeros_like(successes) + 8000,
         torch.zeros_like(successes)
     )
     
     log_dict['sync_goal_reached_bonus'] = sync_goal_reached_bonus
-
-    # # Total reward is: position distance + orientation alignment + action regularization + success bonus + fall penalty
-    # # reward = object_pose_rew + reaching_rew
     
     if not reach_only:
         if use_right_side_reward:
-            rewards = rewards + right_lift_bonus + right_goal_dist_reward + right_goal_reached_bonus
+            rewards = rewards + right_lift_bonus + right_goal_dist_reward + right_goal_reached_bonus + right_move_penalty_after_reach
         if use_left_side_reward:
-            rewards = rewards + left_lift_bonus + left_goal_dist_reward + left_goal_reached_bonus
+            rewards = rewards + left_lift_bonus + left_goal_dist_reward + left_goal_reached_bonus + left_move_penalty_after_reach
             
         if use_right_side_reward and use_left_side_reward:
             rewards = rewards + sync_lift_bonus + sync_goal_reached_bonus
 
-    rewards = base_rewards + rewards * torch.exp(successes)
+    rewards = rewards * torch.exp(successes)
        
     # Find out which envs hit the goal and update successes count
     if use_right_side_reward and use_left_side_reward:
@@ -1726,3 +2262,5 @@ def compute_rewards_async(
 # @TODO
 # add constraint relaxtion? Add linvel and angvel to the object, to make it move towards the goal pose? 
 # Check object pos, palm pos are correct? 
+# add stable condition for reaching the sub-goals
+# add a counter for counting how many step it takes for reaching the right goal and left goal
