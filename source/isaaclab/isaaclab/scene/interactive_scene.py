@@ -239,6 +239,18 @@ class InteractiveScene:
             self.env_prim_paths,
             global_paths=self._global_prim_paths,
         )
+    
+    
+    def filter_entities_collisions(self, entities_prim_path: list[str] | None = None):
+        assert entities_prim_path is not None and len(entities_prim_path) > 0
+        
+        self.cloner.filter_collisions(
+            self.physics_scene_path,
+            "/World/collisions",
+            prim_paths=entities_prim_path,
+            global_paths=[],
+        )
+        
 
     def __str__(self) -> str:
         """Returns a string representation of the scene."""
@@ -451,16 +463,16 @@ class InteractiveScene:
             if is_relative:
                 root_pose[:, :3] += self.env_origins[env_ids]
             root_velocity = asset_state["root_velocity"].clone()
-            articulation.write_root_pose_to_sim(root_pose, env_ids=env_ids)
-            articulation.write_root_velocity_to_sim(root_velocity, env_ids=env_ids)
+            articulation.write_root_pose_to_sim(root_pose[env_ids, :], env_ids=env_ids)
+            articulation.write_root_velocity_to_sim(root_velocity[env_ids, :], env_ids=env_ids)
             # joint state
             joint_position = asset_state["joint_position"].clone()
             joint_velocity = asset_state["joint_velocity"].clone()
-            articulation.write_joint_state_to_sim(joint_position, joint_velocity, env_ids=env_ids)
+            articulation.write_joint_state_to_sim(joint_position[env_ids, :], joint_velocity[env_ids, :], env_ids=env_ids)
             # FIXME: This is not generic as it assumes PD control over the joints.
             #   This assumption does not hold for effort controlled joints.
-            articulation.set_joint_position_target(joint_position, env_ids=env_ids)
-            articulation.set_joint_velocity_target(joint_velocity, env_ids=env_ids)
+            articulation.set_joint_position_target(joint_position[env_ids, :], env_ids=env_ids)
+            articulation.set_joint_velocity_target(joint_velocity[env_ids, :], env_ids=env_ids)
         # deformable objects
         for asset_name, deformable_object in self._deformable_objects.items():
             asset_state = state["deformable_object"][asset_name]
@@ -468,8 +480,8 @@ class InteractiveScene:
             if is_relative:
                 nodal_position[:, :3] += self.env_origins[env_ids]
             nodal_velocity = asset_state["nodal_velocity"].clone()
-            deformable_object.write_nodal_pos_to_sim(nodal_position, env_ids=env_ids)
-            deformable_object.write_nodal_velocity_to_sim(nodal_velocity, env_ids=env_ids)
+            deformable_object.write_nodal_pos_to_sim(nodal_position[env_ids, :], env_ids=env_ids)
+            deformable_object.write_nodal_velocity_to_sim(nodal_velocity[env_ids, :], env_ids=env_ids)
         # rigid objects
         for asset_name, rigid_object in self._rigid_objects.items():
             asset_state = state["rigid_object"][asset_name]
@@ -477,8 +489,8 @@ class InteractiveScene:
             if is_relative:
                 root_pose[:, :3] += self.env_origins[env_ids]
             root_velocity = asset_state["root_velocity"].clone()
-            rigid_object.write_root_pose_to_sim(root_pose, env_ids=env_ids)
-            rigid_object.write_root_velocity_to_sim(root_velocity, env_ids=env_ids)
+            rigid_object.write_root_pose_to_sim(root_pose[env_ids, :], env_ids=env_ids)
+            rigid_object.write_root_velocity_to_sim(root_velocity[env_ids, :], env_ids=env_ids)
 
         # write data to simulation to make sure initial state is set
         # this propagates the joint targets to the simulation
