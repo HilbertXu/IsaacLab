@@ -41,6 +41,8 @@ class RslRlPpoActorCriticCfg:
     activation: str = MISSING
     """The activation function for the actor and critic networks."""
 
+    zero_init: bool = MISSING
+
 
 @configclass
 class RslRlPpoActorCriticRecurrentCfg(RslRlPpoActorCriticCfg):
@@ -141,6 +143,9 @@ class RslRlOnPolicyRunnerCfg:
     num_steps_per_env: int = MISSING
     """The number of steps per environment per update."""
 
+    num_eval_envs: int = MISSING
+    """The number of envs to be used for evaluation"""
+
     max_iterations: int = MISSING
     """The maximum number of iterations."""
 
@@ -180,8 +185,11 @@ class RslRlOnPolicyRunnerCfg:
     neptune_project: str = "isaaclab"
     """The neptune project name. Default is "isaaclab"."""
 
-    wandb_project: str = "isaaclab"
+    wandb_kwargs: dict = MISSING
     """The wandb project name. Default is "isaaclab"."""
+
+    upload_video: dict = MISSING
+    """Whether to upload video to wandb. Default is False."""
 
     resume: bool = False
     """Whether to resume. Default is False."""
