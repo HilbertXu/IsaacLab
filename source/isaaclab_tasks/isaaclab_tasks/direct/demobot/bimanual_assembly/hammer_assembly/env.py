@@ -282,6 +282,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         
         self.delta_qpos = []
         self.episode_log = {}
+        self.episode_consecutive_successes = []
         self.extras["log"] = {
             "common_step_counter": None,
             "consecutive_successes": None,
@@ -1216,23 +1217,13 @@ class HammerAssemblyEnv(DirectRLEnv):
                     self.lift_step_counter + 1,
                     self.lift_step_counter
                 )
-                self.goal_reach_step_counter = torch.where(
-                    self.successes > 2,
-                    self.goal_reach_step_counter + 1,
-                    self.goal_reach_step_counter
-                )
-
             else:
                 self.lift_step_counter = torch.where(
                     (log_dict['right_lift_bonus'] > 0) | (log_dict['left_lift_bonus'] > 0),
                     self.lift_step_counter + 1,
                     self.lift_step_counter
                 )
-                self.goal_reach_step_counter = torch.where(
-                    self.successes > 2,
-                    self.goal_reach_step_counter + 1,
-                    self.goal_reach_step_counter
-                )
+                
 
         self.accumulated_rewards = self.accumulated_rewards + total_reward
         self.right_object_not_lifted = torch.where(
@@ -1287,6 +1278,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.extras["log"]["lift_episode_counter"] = self.lift_episode_counter.mean()
         self.extras["log"]["goal_reach_thresh"] = self.right_object_pos_tolerance.mean()
         self.extras["log"]["goal_reach_episode_counter"] = self.goal_reach_episode_counter.mean()
+
+        self.episode_consecutive_successes.append(self.successes[self.eval_env_mask])
         
         for k in sorted(list(log_dict.keys())):
             if k not in self.extras["log"].keys():
@@ -1405,12 +1398,6 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.lift_episode_counter[env_ids]
         )
 
-        self.goal_reach_episode_counter[env_ids] = torch.where(
-            self.goal_reach_step_counter[env_ids] > 0,
-            self.goal_reach_episode_counter[env_ids] + 1,
-            self.goal_reach_episode_counter[env_ids]
-        )
-        
         self._compute_curriculum(env_ids)
 
         # reset in chunk steps
@@ -1603,6 +1590,8 @@ class HammerAssemblyEnv(DirectRLEnv):
     
     
     def _compute_curriculum(self, env_ids):
+
+        # object lift counter
         self.right_object_lift_thresh[env_ids] = torch.where(
             self.lift_episode_counter[env_ids] > 15,
             torch.clamp(self.right_object_lift_thresh[env_ids] + 0.005, max=0.213),
@@ -1615,6 +1604,13 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.left_object_lift_thresh[env_ids]
         )
 
+        self.lift_episode_counter[env_ids] = torch.where(
+            self.lift_episode_counter[env_ids] > 15,
+            0,
+            self.lift_episode_counter[env_ids]
+        )
+
+        # finger contact distance
         self.right_finger_dist_tolerance[env_ids] = torch.where(
             self.lift_episode_counter[env_ids] > 15,
             torch.clamp(self.right_finger_dist_tolerance[env_ids] - 0.005, min=0.075),
@@ -1627,10 +1623,21 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.left_finger_dist_tolerance[env_ids]
         )
         
-        self.lift_episode_counter[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 15,
-            0,
-            self.lift_episode_counter[env_ids]
+
+        # reduce the reset_to_last_success_ratio
+        max_steps = 16 * 40000 # rollout lenght = 16, max_iterations = 40000
+        warm_up_steps = 16 * 10000 if self.use_left_side_reward and self.use_right_side_reward else 16 * 2000
+        interval = 16 * 2500 if self.use_left_side_reward and self.use_right_side_reward else 16 * 1000
+
+        if (self.common_step_counter > warm_up_steps) and ((self.common_step_counter+1) % (16 * 5000) == 0):
+            self.reset_to_last_success_ratio = max(self.reset_to_last_success_ratio-0.05, 0.05)
+
+        # reduce the threshold for reaching the sub goal
+        episode_consecutive_successes = torch.stack(self.episode_consecutive_successes, dim=1).max(dim=-1).values # [num_envs, ep_length]
+        self.goal_reach_episode_counter[env_ids] = torch.where(
+            episode_consecutive_successes >= self.max_consecutive_success - 1,
+            self.goal_reach_episode_counter[env_ids] + 1,
+            self.goal_reach_episode_counter[env_ids]
         )
 
         self.right_object_pos_tolerance[env_ids] = torch.where(
@@ -1650,14 +1657,6 @@ class HammerAssemblyEnv(DirectRLEnv):
             0,
             self.goal_reach_episode_counter[env_ids]
         )
-
-        # reduce the reset_to_last_success_ratio
-        max_steps = 16 * 40000 # rollout lenght = 16, max_iterations = 40000
-        warm_up_steps = 16 * 10000 if self.use_left_side_reward and self.use_right_side_reward else 16 * 2000
-        interval = 16 * 2500 if self.use_left_side_reward and self.use_right_side_reward else 16 * 1000
-
-        if (self.common_step_counter > warm_up_steps) and ((self.common_step_counter+1) % (16 * 5000) == 0):
-            self.reset_to_last_success_ratio = max(self.reset_to_last_success_ratio-0.05, 0.05)
 
 
 
