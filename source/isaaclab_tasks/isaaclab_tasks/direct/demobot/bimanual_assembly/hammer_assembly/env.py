@@ -237,7 +237,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
 
-        self.sync_window_size = 60
+        self.sync_window_size = 50
         self.right_object_lift_thresh = 0.14 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         self.right_object_pos_tolerance = 0.05 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         self.right_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
@@ -256,7 +256,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.pos_tolerance_curriculum_step = 200 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 100
 
         self.reset_to_last_success_ratio = 0.5
-        self.num_eval_envs = self.cfg.num_eval_envs
+        self.num_eval_envs = self.cfg.num_eval_envs if self.num_envs > self.cfg.num_eval_envs else self.num_envs
         self.eval_env_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.eval_env_mask[:self.num_eval_envs] = torch.tensor(True)
         
@@ -1312,16 +1312,18 @@ class HammerAssemblyEnv(DirectRLEnv):
 
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        def _check_unatural_grasp_pose(fingertips_pos, object_pos, init_object_pos, lift_threshold):
-            lift_flag = (object_pos[:, 2] - init_object_pos[2] > lift_threshold)
-            unatural_flag = torch.norm(fingertips_pos - object_pos.unsqueeze(1), p=2, dim=-1).max(dim=1).values > 0.09
-            return lift_flag & unatural_flag
+        def _check_bad_grasp_pose(fingertips_pos, ee_pos, object_pos, object_keypoint_cur, object_pc_cur, lift_threshold):
+            reach_flag = torch.norm(ee_pos - object_pos, p=2, dim=-1) < 0.04
+            lift_flag = object_keypoint_cur[:, :, 2].min(dim=1).values > lift_threshold
+            h2o_dist = (torch.cdist(fingertips_pos, object_pc_cur).min(dim=-1).values).max(dim=-1).values
+            bad_grasp_flag = lift_flag & (h2o_dist > 0.025)
+            return reach_flag & lift_flag & bad_grasp_flag
                     
         self._compute_intermediate_values()
 
         # reset if the action sequence in a chunk are all executed and haven't reached the target object pose
-        right_goal_dist = torch.norm(self.right_object_pos - self.right_goal_pos, p=2, dim=-1)
-        left_goal_dist = torch.norm(self.left_object_pos - self.left_goal_pos, p=2, dim=-1)
+        right_goal_dist = torch.norm(self.right_object_keypoint_cur - self.right_object_keypoint_goal, p=2, dim=-1).max(dim=1).values
+        left_goal_dist = torch.norm(self.left_object_keypoint_cur - self.right_object_keypoint_goal, p=2, dim=-1).max(dim=1).values
 
         not_reach = (right_goal_dist >= self.cfg.pos_success_tolerance) | (left_goal_dist >= self.cfg.pos_success_tolerance)
         
@@ -1329,15 +1331,25 @@ class HammerAssemblyEnv(DirectRLEnv):
         fall_terminate = (self.right_object_pos[:, 2] < 0.1) | (self.left_object_pos[:, 2] < 0.1)
         
         # 2. object is picked up in an unatural way
-        unatural_terminate = _check_unatural_grasp_pose(self.right_fingertip_pos, self.right_object_pos, self.right_object_init_pos, self.right_object_lift_thresh) | \
-            _check_unatural_grasp_pose(self.left_fingertip_pos, self.left_object_pos, self.left_object_init_pos, self.left_object_lift_thresh)
-        
+        # @NOTE do we really need this? seems not :(
+        # right_bad_grasp = _check_bad_grasp_pose(
+        #     self.right_fingertip_pos, self.right_ee_pos, 
+        #     self.right_object_pos, self.right_object_keypoint_cur, 
+        #     self.right_object_grasp_keypoint_cur, self.right_object_lift_thresh
+        # )
+        # left_bad_grasp = _check_bad_grasp_pose(
+        #     self.left_fingertip_pos, self.left_ee_pos, 
+        #     self.left_object_pos, self.left_object_keypoint_cur, 
+        #     self.left_object_grasp_keypoint_cur, self.left_object_lift_thresh
+        # )
+        # bad_grasp_terminate = right_bad_grasp | left_bad_grasp
+            
         # Check if any envs succeed all chunks
         max_success_reached = self.successes >= self.max_consecutive_success
 
         time_out = self.ref_chunk_step_idx[:, 1] >= self.ref_chunk_max_steps[self.ref_chunk_step_idx[:, 0]] - 1
             
-        return fall_terminate | unatural_terminate, not_reach, time_out, max_success_reached
+        return fall_terminate, not_reach, time_out, max_success_reached
 
 
     def _reset_idx(self, env_ids: Sequence[int] | None, keep_last_success=False):
@@ -1541,7 +1553,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         non_succeed_out_of_reach_mask = (out_of_reach & (~self.eval_env_mask)) & (self.successes == 0)
         had_succeed_out_of_reach_ids = had_succeed_out_of_reach_mask.nonzero(as_tuple=False).squeeze(-1)
         non_succeed_out_of_reach_ids = non_succeed_out_of_reach_mask.nonzero(as_tuple=False).squeeze(-1)
-        if len(non_succeed_out_of_reach_ids):
+        if len(non_succeed_out_of_reach_ids) > 0:
             reset_to_init_ids.append(non_succeed_out_of_reach_ids)
         if len(had_succeed_out_of_reach_ids) > 0:
             num_samples = int(math.ceil(had_succeed_out_of_reach_ids.shape[0] * self.reset_to_last_success_ratio))
@@ -1601,34 +1613,34 @@ class HammerAssemblyEnv(DirectRLEnv):
 
         # object lift counter
         self.right_object_lift_thresh[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 15,
+            self.lift_episode_counter[env_ids] > 20,
             torch.clamp(self.right_object_lift_thresh[env_ids] + 0.005, max=0.213),
             self.right_object_lift_thresh[env_ids]
         )
         
         self.left_object_lift_thresh[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 15,
+            self.lift_episode_counter[env_ids] > 20,
             torch.clamp(self.left_object_lift_thresh[env_ids] + 0.005, max=0.185),
             self.left_object_lift_thresh[env_ids]
         )
 
-        self.lift_episode_counter[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 15,
-            0,
-            self.lift_episode_counter[env_ids]
-        )
-
         # finger contact distance
         self.right_finger_dist_tolerance[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 15,
-            torch.clamp(self.right_finger_dist_tolerance[env_ids] - 0.005, min=0.075),
+            self.lift_episode_counter[env_ids] > 20,
+            torch.clamp(self.right_finger_dist_tolerance[env_ids] - 0.005, min=0.05),
             self.right_finger_dist_tolerance[env_ids]
         )
 
         self.left_finger_dist_tolerance[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 15,
-            torch.clamp(self.left_finger_dist_tolerance[env_ids] - 0.005, min=0.075),
+            self.lift_episode_counter[env_ids] > 20,
+            torch.clamp(self.left_finger_dist_tolerance[env_ids] - 0.005, min=0.05),
             self.left_finger_dist_tolerance[env_ids]
+        )
+
+        self.lift_episode_counter[env_ids] = torch.where(
+            self.lift_episode_counter[env_ids] > 20,
+            0,
+            self.lift_episode_counter[env_ids]
         )
         
 
@@ -2032,9 +2044,6 @@ def compute_rewards_async(
     
     # stage-2, grasping and lifting
 
-    # right_h2o_dist = torch.norm(right_finger_tips_pos - right_object_cur_pos.unsqueeze(1), p=2, dim=-1).max(dim=1).values
-    # right_h2o_dist = torch.norm(right_finger_tips_pos - right_object_cur_pos.unsqueeze(1), p=2, dim=-1).mean(dim=1)
-
     right_h2o_dist = torch.cdist(right_finger_tips_pos, right_object_grasp_keypoint_cur).min(dim=-1).values
     right_h2o_dist = right_h2o_dist.max(dim=-1).values
     right_h2o_dist_reward = (1.0 / (right_h2o_dist + 1.0))
@@ -2045,9 +2054,6 @@ def compute_rewards_async(
         right_h2o_dist_reward,
         0.0
     )
-
-    # left_h2o_dist = torch.norm(left_finger_tips_pos - left_object_cur_pos.unsqueeze(1), p=2, dim=-1).max(dim=1).values
-    # left_h2o_dist = torch.norm(left_finger_tips_pos - left_object_cur_pos.unsqueeze(1), p=2, dim=-1).mean(dim=1)
 
     left_h2o_dist = torch.cdist(left_finger_tips_pos, left_object_grasp_keypoint_cur).min(dim=-1).values
     left_h2o_dist = left_h2o_dist.max(dim=-1).values
@@ -2073,11 +2079,6 @@ def compute_rewards_async(
         rewards = right_ee2o_reward + right_h2o_dist_reward + right_object_reached_bonus
     
     
-    # Lifting condition: the object is lift-up above the threshold, and the fingers & ee are close to the object
-    # right_object_lifted = ((right_object_cur_pos[:, 2]-right_object_init_pos[2]) > right_object_lift_thres) & \
-    #                         (right_ee2o_dist < 0.04) & (right_h2o_dist < right_finger_dist_tolerance)
-
-
     right_object_lifted = (right_object_keypoint_cur[:, :, 2].min(dim=1).values > right_object_lift_thres) & \
                             (right_ee2o_dist < 0.04) & (right_h2o_dist < right_finger_dist_tolerance)
     right_lift_bonus = torch.where(
