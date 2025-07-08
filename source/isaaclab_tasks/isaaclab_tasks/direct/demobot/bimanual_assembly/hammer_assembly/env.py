@@ -253,6 +253,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         # self.left_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
         # self.left_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
 
+        self.pos_tolerance_curriculum_step = 200 if self.use_left_side_reward and self.use_right_side_reward else 100
+
         self.reset_to_last_success_ratio = 0.5
         self.num_eval_envs = self.cfg.num_eval_envs
         self.eval_env_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -1644,19 +1646,19 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.goal_reach_episode_counter[env_ids] += 1
 
         self.right_object_pos_tolerance[env_ids] = torch.where(
-            self.goal_reach_episode_counter[env_ids] > 50,
+            self.goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
             torch.clamp(self.right_object_pos_tolerance[env_ids] - 0.005, min=0.005),
             self.right_object_pos_tolerance[env_ids]
         )
 
         self.left_object_pos_tolerance[env_ids] = torch.where(
-            self.goal_reach_episode_counter[env_ids] > 50,
+            self.goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
             torch.clamp(self.left_object_pos_tolerance[env_ids] - 0.005, min=0.005),
             self.left_object_pos_tolerance[env_ids]
         )
 
         self.goal_reach_episode_counter[env_ids] = torch.where(
-            self.goal_reach_episode_counter[env_ids] > 50,
+            self.goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
             0,
             self.goal_reach_episode_counter[env_ids]
         )
