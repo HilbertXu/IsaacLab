@@ -237,21 +237,16 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
 
-        self.sync_window_size = 60
+        self.sync_window_size = 50
         self.right_object_lift_thresh = 0.21 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-        self.right_object_pos_tolerance = 0.075 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        self.right_object_pos_tolerance = 0.006 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         self.right_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
-        self.right_finger_dist_tolerance = 0.1 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        self.right_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         
-        self.left_object_lift_thresh = 0.18 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-        self.left_object_pos_tolerance = 0.0075 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        self.left_object_lift_thresh = 0.187 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        self.left_object_pos_tolerance = 0.006 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         self.left_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
-        self.left_finger_dist_tolerance = 0.1 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-
-        # self.left_object_lift_thresh = 0.21 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-        # self.left_object_pos_tolerance = 0.027 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-        # self.left_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
-        # self.left_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        self.left_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
 
         self.pos_tolerance_curriculum_step = 200 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 100
 
@@ -1323,7 +1318,7 @@ class HammerAssemblyEnv(DirectRLEnv):
 
         # reset if the action sequence in a chunk are all executed and haven't reached the target object pose
         right_goal_dist = torch.norm(self.right_object_keypoint_cur - self.right_object_keypoint_goal, p=2, dim=-1).max(dim=1).values
-        left_goal_dist = torch.norm(self.left_object_keypoint_cur - self.right_object_keypoint_goal, p=2, dim=-1).max(dim=1).values
+        left_goal_dist = torch.norm(self.left_object_keypoint_cur - self.left_object_keypoint_goal, p=2, dim=-1).max(dim=1).values
 
         not_reach = (right_goal_dist >= self.cfg.pos_success_tolerance) | (left_goal_dist >= self.cfg.pos_success_tolerance)
         
