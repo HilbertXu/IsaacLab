@@ -55,8 +55,8 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
         dt=1 / 120,
         render_interval=decimation,
         physics_material=sim_utils.RigidBodyMaterialCfg(
-            static_friction=1.0,
-            dynamic_friction=1.0,
+            static_friction=2.0,
+            dynamic_friction=2.0,
             restitution=0.0,
         ),
         physx=PhysxCfg(
@@ -79,6 +79,7 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
                 max_depenetration_velocity=1000.0,
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=0.05),
+            
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.75, 0.0)),
             scale=(1., 1., 1.),
         ),
