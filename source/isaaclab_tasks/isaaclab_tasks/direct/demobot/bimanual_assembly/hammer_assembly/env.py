@@ -804,7 +804,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             return object_pos, object_rot, object_velocities, object_linvel, object_angvel
 
         # stage encoding
-        self.successes_onehot = F.one_hot(self.successes.clone().long(), num_classes=self.max_consecutive_success)
+        self.successes_onehot = F.one_hot(self.successes.clone().long(), num_classes=self.max_consecutive_success+1)
         
         # data for robot
         self.robot_dof_pos = self.robot.data.joint_pos.clone()

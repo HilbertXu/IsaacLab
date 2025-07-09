@@ -85,9 +85,9 @@ class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_asymmetric_rnd(HammerAssemb
         desired_kl=0.008,
         max_grad_norm=1.0,
         rnd_cfg=RslRlRndCfg(
-            weight=500,
+            weight=5,
             weight_schedule=RslRlRndCfg.LinearWeightScheduleCfg(
-                final_value=100,
+                final_value=0.5,
                 initial_step=30000,
                 final_step=22500
             ),
@@ -142,9 +142,9 @@ class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_right_asymmetric_rnd(Hammer
         desired_kl=0.008,
         max_grad_norm=1.0,
         rnd_cfg=RslRlRndCfg(
-            weight=500,
+            weight=5,
             weight_schedule=RslRlRndCfg.LinearWeightScheduleCfg(
-                final_value=100,
+                final_value=0.5,
                 initial_step=30000,
                 final_step=22500
             ),
@@ -197,9 +197,9 @@ class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_left_asymmetric_rnd(HammerA
         desired_kl=0.008,
         max_grad_norm=1.0,
         rnd_cfg=RslRlRndCfg(
-            weight=500,
+            weight=5,
             weight_schedule=RslRlRndCfg.LinearWeightScheduleCfg(
-                final_value=100,
+                final_value=0.5,
                 initial_step=30000,
                 final_step=22500
             ),
