@@ -15,7 +15,9 @@ from . import agents
 
 inhand_task_entry = "isaaclab_tasks.direct.demobot.bimanual_assembly.hammer_assembly"
 
-
+###############
+# bimanual envs
+###############
 gym.register(
     id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
@@ -41,16 +43,20 @@ gym.register(
 
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-GRU-Vel-WRef-Async-Kpts-Asymmetric-v0",
+    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Asymmetric-RND-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.cfg:HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric",
+        "env_cfg_entry_point": f"{__name__}.cfg:HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric_rnd",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_gru_cfg:HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_asymmetric",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_asymmetric_rnd",
     },
 )
 
+
+###############
+# right hand envs
+###############
 gym.register(
     id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Right-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
@@ -75,19 +81,23 @@ gym.register(
 )
 
 
-
 gym.register(
-    id="Bimanual-Hammer-Assembly-GRU-Vel-WRef-Async-Kpts-Right-Asymmetric-v0",
+    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Right-Asymmetric-RND-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.cfg:HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric",
+        "env_cfg_entry_point": f"{__name__}.cfg:HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric_rnd",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_gru_cfg:HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_right_asymmetric",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_right_asymmetric",
     },
 )
 
 
+
+
+###############
+# left hand envs
+###############
 gym.register(
     id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Left-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
@@ -113,17 +123,20 @@ gym.register(
 
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-GRU-Vel-WRef-Async-Kpts-Left-Asymmetric-v0",
+    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Left-Asymmetric-RND-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.cfg:HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric",
+        "env_cfg_entry_point": f"{__name__}.cfg:HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric_rnd",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_gru_cfg:HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_left_asymmetric",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_left_asymmetric",
     },
 )
 
 
+###############
+# eval envs
+###############
 
 gym.register(
     id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-v0-Eval",

@@ -24,6 +24,8 @@ from isaaclab.envs.common import VecEnvStepReturn
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane, spawn_from_usd
 from isaaclab.sim.spawners.meshes import spawn_mesh_cuboid, MeshCuboidCfg
 from isaaclab.utils.math import quat_conjugate, quat_from_angle_axis, quat_mul, sample_uniform, saturate, matrix_from_quat, quat_apply
+from collections import deque
+import statistics
 
 from isaaclab.sensors import (
     FrameTransformer,
@@ -36,18 +38,15 @@ from isaaclab.sensors import (
 )
 
 from .cfg import (
-    HammerAssemblyEnvCfg_vel_wref_sync,
-    HammerAssemblyEnvCfg_pos_wref_sync,
-    HammerAssemblyEnvCfg_vel_woref_sync,
-    HammerAssemblyEnvCfg_pos_woref_sync,
-    HammerAssemblyEnvCfg_vel_wref_async,
-    HammerAssemblyEnvCfg_pos_wref_async,
-    HammerAssemblyEnvCfg_vel_woref_async,
-    HammerAssemblyEnvCfg_pos_woref_async,
-    HammerAssemblyEnvCfg_vel_woref_async_reach,
-    HammerAssemblyEnvCfg_pos_woref_async_reach,
-    HammerAssemblyEnvCfg_vel_woref_sync_reach,
-    HammerAssemblyEnvCfg_pos_woref_sync_reach
+    HammerAssemblyEnvCfg_vel_wref_async_kpts,
+    HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric,
+    HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric_rnd,
+    HammerAssemblyEnvCfg_vel_wref_async_kpts_right,
+    HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric,
+    HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric_rnd,
+    HammerAssemblyEnvCfg_vel_wref_async_kpts_left,
+    HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric,
+    HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric_rnd,
 )
 import matplotlib.pyplot as plt
 
@@ -113,12 +112,15 @@ class HammerAssemblyEnv(DirectRLEnv):
     #   |-- _get_observations()
     cfg: Optional[
         Union[
-            HammerAssemblyEnvCfg_vel_wref_sync, HammerAssemblyEnvCfg_pos_wref_sync, 
-            HammerAssemblyEnvCfg_vel_woref_sync, HammerAssemblyEnvCfg_pos_woref_sync,
-            HammerAssemblyEnvCfg_vel_wref_async, HammerAssemblyEnvCfg_pos_wref_async,
-            HammerAssemblyEnvCfg_vel_woref_async, HammerAssemblyEnvCfg_pos_woref_async,
-            HammerAssemblyEnvCfg_vel_woref_async_reach, HammerAssemblyEnvCfg_pos_woref_async_reach,
-            HammerAssemblyEnvCfg_vel_woref_sync_reach, HammerAssemblyEnvCfg_pos_woref_sync_reach
+            HammerAssemblyEnvCfg_vel_wref_async_kpts,
+            HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric,
+            HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric_rnd,
+            HammerAssemblyEnvCfg_vel_wref_async_kpts_right,
+            HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric,
+            HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric_rnd,
+            HammerAssemblyEnvCfg_vel_wref_async_kpts_left,
+            HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric,
+            HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric_rnd,
         ]
     ]
     
@@ -126,12 +128,15 @@ class HammerAssemblyEnv(DirectRLEnv):
         self, 
         cfg: Optional[
             Union[
-                HammerAssemblyEnvCfg_vel_wref_sync, HammerAssemblyEnvCfg_pos_wref_sync, 
-                HammerAssemblyEnvCfg_vel_woref_sync, HammerAssemblyEnvCfg_pos_woref_sync,
-                HammerAssemblyEnvCfg_vel_wref_async, HammerAssemblyEnvCfg_pos_wref_async,
-                HammerAssemblyEnvCfg_vel_woref_async, HammerAssemblyEnvCfg_pos_woref_async,
-                HammerAssemblyEnvCfg_vel_woref_async_reach, HammerAssemblyEnvCfg_pos_woref_async_reach,
-                HammerAssemblyEnvCfg_vel_woref_sync_reach, HammerAssemblyEnvCfg_pos_woref_sync_reach
+                HammerAssemblyEnvCfg_vel_wref_async_kpts,
+                HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric,
+                HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric_rnd,
+                HammerAssemblyEnvCfg_vel_wref_async_kpts_right,
+                HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric,
+                HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric_rnd,
+                HammerAssemblyEnvCfg_vel_wref_async_kpts_left,
+                HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric,
+                HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric_rnd,
             ]
         ], 
         render_mode: str | None = None, 
@@ -237,7 +242,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
         self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
 
-        self.sync_window_size = 50
+        self.lift_sync_window_size = 50
+        self.goal_sync_window_size = 75
         self.right_object_lift_thresh = 0.14 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         self.right_object_pos_tolerance = 0.05 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         self.right_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
@@ -248,7 +254,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
         self.left_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
 
-        self.pos_tolerance_curriculum_step = 200 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 100
+        self.pos_tolerance_curriculum_step = 100 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 50
 
         self.reset_to_last_success_ratio = 0.5
         self.num_eval_envs = self.cfg.num_eval_envs if self.num_envs > self.cfg.num_eval_envs else self.num_envs
@@ -263,8 +269,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         # counter for counting how many steps the RL takes to reach the current sub-goal
         self.right_step_to_lift_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.left_step_to_lift_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        self.right_step_to_reach_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        self.left_step_to_reach_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.right_step_to_goal_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.left_step_to_goal_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         self.control_mode = self.cfg.control_mode
         self.use_ref = self.cfg.use_ref
@@ -279,7 +285,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         
         self.delta_qpos = []
         self.episode_log = {}
-        self.eval_consecutive_successes = torch.zeros(self.num_eval_envs, dtype=torch.float, device=self.device)
+        self.eval_consecutive_successes = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.csbuffer = deque(maxlen=self.num_eval_envs*2)
         self.extras["log"] = {
             "common_step_counter": None,
             "consecutive_successes": None,
@@ -291,9 +298,9 @@ class HammerAssemblyEnv(DirectRLEnv):
         
         if self.use_left_side_reward:
             self.extras["log"].update(
-                {
+                {   
                     "left_step_to_lift_counter": None,
-                    "left_step_to_reach_counter": None,
+                    "left_step_to_goal_counter": None,
                     "left_ee2o_dist": None,
                     "left_h2o_dist": None,
                     "left_goal_dist": None,
@@ -311,7 +318,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.extras["log"].update(
                 {
                     "right_step_to_lift_counter": None,
-                    "right_step_to_reach_counter": None,
+                    "right_step_to_goal_counter": None,
                     "right_ee2o_dist": None,
                     "right_h2o_dist": None,
                     "right_goal_dist": None,
@@ -795,6 +802,9 @@ class HammerAssemblyEnv(DirectRLEnv):
             object_angvel = obj.data.root_ang_vel_w.clone()
 
             return object_pos, object_rot, object_velocities, object_linvel, object_angvel
+
+        # stage encoding
+        self.successes_onehot = F.one_hot(self.successes.clone().long(), num_classes=self.max_consecutive_success)
         
         # data for robot
         self.robot_dof_pos = self.robot.data.joint_pos.clone()
@@ -912,18 +922,24 @@ class HammerAssemblyEnv(DirectRLEnv):
         if self.cfg.asymmetric_obs:
             states = self.compute_full_state()
 
+        if self.cfg.rnd_obs:
+            rnd_state = self.compute_rnd_state()
+
         observations = {"policy": obs}
         if self.cfg.asymmetric_obs:
-            observations = {"policy": obs, "critic": states}
+            observations.update({"critic": states})
         
+        if self.cfg.rnd_obs:
+            observations.update({"rnd_state": rnd_state})
+
         return observations
 
     
     def compute_reduced_observations(self):
         
         obs = [
-            # chunk_id condition
-            self.ref_chunk_step_idx[:, 0].reshape(self.num_envs, 1),
+            # stage condition
+            self.successes_onehot,
             # last predicted action residual 
             self.pred_actions,
         ]
@@ -999,8 +1015,8 @@ class HammerAssemblyEnv(DirectRLEnv):
     def compute_full_state(self):
         
         states = [
-            # chunk_id condition
-            self.ref_chunk_step_idx[:, 0].reshape(self.num_envs, 1),
+            # stage condition
+            self.successes_onehot,
             # last predicted action residual 
             self.pred_actions,
         ]
@@ -1093,6 +1109,62 @@ class HammerAssemblyEnv(DirectRLEnv):
         states =  torch.cat(states, dim=-1)
 
         return states
+    
+
+    def compute_rnd_state(self):
+        
+        states = [
+            # current stage condition
+            self.successes_onehot,
+        ]
+        right_base_states = [
+            # right hand states
+            self.right_ee_pos, 
+            self.right_fingertip_pos.view(self.num_envs, self.num_right_finger_tips * 3),
+        ]
+        left_base_states = [
+            # left hand state
+            self.left_ee_pos,
+            self.left_fingertip_pos.view(self.num_envs, self.num_left_finger_tips * 3),
+        ]
+
+        if not self.use_object_keypoint:
+            right_object_states = [
+                # object pose & goal pose
+                self.right_object_pos,
+                self.right_object_rot,
+                self.right_object_pos - self.right_goal_pos, # right object to right goal pose translation
+                quat_mul(self.right_object_rot, quat_conjugate(self.right_goal_rot)), # right object to right goal pose rotational error
+            ]
+            left_object_states = [
+                self.left_object_pos,
+                self.left_object_rot,
+                self.left_goal_pos,
+                self.left_goal_rot,
+                self.left_object_pos - self.left_goal_pos, # left object to left goal pose translation
+                quat_mul(self.left_object_rot, quat_conjugate(self.left_goal_rot)), # left object to left goal pose rotational error
+            ]
+        else:
+            right_object_states = [
+                self.right_object_keypoint_cur.reshape(self.num_envs, -1),
+                self.right_object_keypoint_goal.reshape(self.num_envs, -1),
+                (self.right_object_keypoint_cur - self.right_object_keypoint_goal).reshape(self.num_envs, -1),
+            ]
+            left_object_states = [
+                self.left_object_keypoint_cur.reshape(self.num_envs, -1),
+                self.left_object_keypoint_goal.reshape(self.num_envs, -1),
+                (self.left_object_keypoint_cur - self.left_object_keypoint_goal).reshape(self.num_envs, -1),
+            ]
+        
+        if self.use_left_side_reward:
+            states = states + left_base_states + left_object_states
+            
+        if self.use_right_side_reward:
+            states = states + right_base_states + right_object_states
+        
+        states =  torch.cat(states, dim=-1)
+
+        return states
 
 
     def _get_rewards(self) -> torch.Tensor:
@@ -1130,7 +1202,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             right_object_not_lifted=self.right_object_not_lifted,
             right_goal_not_reached=self.right_goal_not_reached,
             right_step_to_lift_counter=self.right_step_to_lift_counter,
-            right_step_to_reach_counter=self.right_step_to_reach_counter,
+            right_step_to_goal_counter=self.right_step_to_goal_counter,
             right_object_pos_tolerance=self.right_object_pos_tolerance,
             right_object_rot_tolerance=self.right_object_rot_tolerance,
             right_finger_dist_tolerance=self.right_finger_dist_tolerance,
@@ -1152,13 +1224,14 @@ class HammerAssemblyEnv(DirectRLEnv):
             left_object_lift_thres=self.left_object_lift_thresh,
             left_goal_not_reached=self.left_goal_not_reached,
             left_step_to_lift_counter=self.left_step_to_lift_counter,
-            left_step_to_reach_counter=self.left_step_to_reach_counter,
+            left_step_to_goal_counter=self.left_step_to_goal_counter,
             left_object_pos_tolerance=self.left_object_pos_tolerance,
             left_object_rot_tolerance=self.left_object_rot_tolerance,
             left_finger_dist_tolerance=self.left_finger_dist_tolerance,
             object_not_sync_lifted=self.object_not_sync_lifted,
             action_penalty_scale=self.cfg.action_penalty_scale,
-            sync_window_size=self.sync_window_size,
+            lift_sync_window_size=self.lift_sync_window_size, 
+            goal_sync_window_size=self.goal_sync_window_size,
             control_mode=self.control_mode,
             ref_actions=self.ref_action_norm,
             use_ref=self.use_ref,
@@ -1196,16 +1269,16 @@ class HammerAssemblyEnv(DirectRLEnv):
                 self.left_step_to_lift_counter
             )
 
-            self.right_step_to_reach_counter = torch.where(
+            self.right_step_to_goal_counter = torch.where(
                 ((log_dict["right_goal_reached"])),
                 self.episode_length_buf,
-                self.right_step_to_reach_counter
+                self.right_step_to_goal_counter
             )
 
-            self.left_step_to_reach_counter = torch.where(
+            self.left_step_to_goal_counter = torch.where(
                 ((log_dict["left_goal_reached"])),
                 self.episode_length_buf,
-                self.left_step_to_reach_counter
+                self.left_step_to_goal_counter
             )
 
             if self.use_left_side_reward and self.use_right_side_reward:
@@ -1277,7 +1350,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.extras["log"]["goal_reach_episode_counter"] = self.goal_reach_episode_counter.mean()
 
         # keep tracking of the max consecutive successes for each eval envs
-        self.eval_consecutive_successes = torch.maximum(self.successes[self.eval_env_mask], self.eval_consecutive_successes)
+        self.eval_consecutive_successes = torch.maximum(self.successes, self.eval_consecutive_successes)
         
         for k in sorted(list(log_dict.keys())):
             if k not in self.extras["log"].keys():
@@ -1410,7 +1483,9 @@ class HammerAssemblyEnv(DirectRLEnv):
 
         # Update the number of consecutive success for the reset eval envs
         eval_env_ids = env_ids[env_ids < self.num_eval_envs]
-        
+        if len(eval_env_ids) > 0:
+            self.csbuffer.extend(self.eval_consecutive_successes[eval_env_ids].cpu().numpy().tolist())
+
         self._compute_curriculum(env_ids)
 
         # reset in chunk steps
@@ -1427,8 +1502,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.right_object_not_reached[env_ids] = torch.tensor(True)
         self.left_object_not_reached[env_ids] = torch.tensor(True)
 
-        self.right_step_to_reach_counter[env_ids] = 0
-        self.left_step_to_reach_counter[env_ids] = 0
+        self.right_step_to_goal_counter[env_ids] = 0
+        self.left_step_to_goal_counter[env_ids] = 0
         self.right_step_to_lift_counter[env_ids] = 0
         self.left_step_to_lift_counter[env_ids] = 0
 
@@ -1487,18 +1562,18 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.lift_episode_counter[env_ids]
         )
         
-        self._compute_curriculum(env_ids)
-            
         self.ref_chunk_step_idx[env_ids, 1] = 0
         self.lift_step_counter[env_ids] = 0
         self.goal_reach_step_counter[env_ids] = 0
         self.prev_targets[env_ids] = self.last_success_prev_targets[env_ids]
         self.cur_targets[env_ids] = self.last_success_cur_targets[env_ids]
+        self.episode_length_buf[env_ids] = 0.0
+        
         
         self.right_goal_not_reached[env_ids] = torch.tensor(True)
         self.left_goal_not_reached[env_ids] = torch.tensor(True)
-        self.right_step_to_reach_counter[env_ids] = 0
-        self.left_step_to_reach_counter[env_ids] = 0
+        self.right_step_to_goal_counter[env_ids] = 0
+        self.left_step_to_goal_counter[env_ids] = 0
         
         self.right_goal_rot[env_ids] = self.right_ref_targets[self.ref_chunk_step_idx[env_ids, 0], 3:7]
         self.right_goal_pos[env_ids] = self.right_ref_targets[self.ref_chunk_step_idx[env_ids, 0], :3]
@@ -1520,6 +1595,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.sim.render()
 
         self._compute_intermediate_values()
+
         
 
     def _reset_envs(
@@ -1648,9 +1724,9 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.reset_to_last_success_ratio = max(self.reset_to_last_success_ratio-0.05, 0.05)
 
         # reduce the threshold for reaching the sub goal
-        mean_eval_consecutive_successes = self.eval_consecutive_successes.mean() # [num_eval_envs, ep_length]
-        if mean_eval_consecutive_successes > self.max_consecutive_success - 1:
+        if len(self.csbuffer) > self.num_eval_envs and statistics.mean(self.csbuffer) > self.max_consecutive_success - 1:
             self.goal_reach_episode_counter[env_ids] += 1
+            # self.csbuffer.clear() # reset buffer
 
         self.right_object_pos_tolerance[env_ids] = torch.where(
             self.goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
@@ -1670,6 +1746,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.goal_reach_episode_counter[env_ids]
         )
 
+        
 
 
 @torch.jit.script
@@ -1753,7 +1830,7 @@ def compute_rewards_sync(
     right_object_not_reached: torch.Tensor,
     right_goal_not_reached: torch.Tensor,
     right_step_to_lift_counter: torch.Tensor,
-    right_step_to_reach_counter: torch.Tensor,
+    right_step_to_goal_counter: torch.Tensor,
     right_object_pos_tolerance: torch.Tensor,
     right_object_rot_tolerance: float,
     right_finger_dist_tolerance: torch.Tensor,
@@ -1775,13 +1852,14 @@ def compute_rewards_sync(
     left_object_not_lifted: torch.Tensor,
     left_goal_not_reached: torch.Tensor,
     left_step_to_lift_counter: torch.Tensor,
-    left_step_to_reach_counter: torch.Tensor,
+    left_step_to_goal_counter: torch.Tensor,
     left_object_pos_tolerance: torch.Tensor,
     left_object_rot_tolerance: float,
     left_finger_dist_tolerance: torch.Tensor,
     object_not_sync_lifted: torch.Tensor,
     action_penalty_scale: float,
-    sync_window_size: int, 
+    lift_sync_window_size: int, 
+    goal_sync_window_size: int,
     control_mode: str,
     ref_actions: torch.Tensor,
     use_ref: bool,
@@ -1948,7 +2026,7 @@ def compute_rewards_async(
     right_object_not_reached: torch.Tensor,
     right_goal_not_reached: torch.Tensor,
     right_step_to_lift_counter: torch.Tensor,
-    right_step_to_reach_counter: torch.Tensor,
+    right_step_to_goal_counter: torch.Tensor,
     right_object_pos_tolerance: torch.Tensor,
     right_object_rot_tolerance: float,
     right_finger_dist_tolerance: torch.Tensor,
@@ -1970,13 +2048,14 @@ def compute_rewards_async(
     left_object_not_lifted: torch.Tensor,
     left_goal_not_reached: torch.Tensor,
     left_step_to_lift_counter: torch.Tensor,
-    left_step_to_reach_counter: torch.Tensor,
+    left_step_to_goal_counter: torch.Tensor,
     left_object_pos_tolerance: torch.Tensor,
     left_object_rot_tolerance: float,
     left_finger_dist_tolerance: torch.Tensor,
     object_not_sync_lifted: torch.Tensor,
     action_penalty_scale: float,
-    sync_window_size: int, 
+    lift_sync_window_size: int, 
+    goal_sync_window_size: int, 
     control_mode: str,
     ref_actions: torch.Tensor,
     use_ref: bool,
@@ -2020,7 +2099,7 @@ def compute_rewards_async(
     left_ee2o_dist = torch.norm(left_ee_pos - left_object_cur_pos, p=2, dim=-1)
     left_ee2o_reward = (1.0 / (left_ee2o_dist + 1.0))
     left_ee2o_reward *= left_ee2o_reward
-    left_object_reached = (left_ee2o_dist < 0.045) & (left_ee_pos[:, 2] < left_object_cur_pos[:, 2])
+    left_object_reached = (left_ee2o_dist < 0.045) & (left_ee_pos[:, 2] - left_object_cur_pos[:, 2] < 0.005)
     left_object_reached_bonus = torch.where(
         left_object_reached & left_object_not_reached,
         torch.zeros_like(successes)+50,
@@ -2075,7 +2154,7 @@ def compute_rewards_async(
     
     
     right_object_lifted = (right_object_keypoint_cur[:, :, 2].min(dim=1).values > right_object_lift_thres) & \
-                            (right_ee2o_dist < 0.04) & (right_h2o_dist < right_finger_dist_tolerance)
+                            (right_ee2o_dist < 0.05) & (right_h2o_dist < right_finger_dist_tolerance)
     right_lift_bonus = torch.where(
         right_object_lifted & right_object_not_lifted,
         torch.zeros_like(successes)+100,
@@ -2083,7 +2162,7 @@ def compute_rewards_async(
     ).float()
     
     left_object_lifted = (left_object_keypoint_cur[:, :, 2].min(dim=1).values > left_object_lift_thres)  & \
-                            (left_ee2o_dist < 0.04) & (left_h2o_dist < left_finger_dist_tolerance)
+                            (left_ee2o_dist < 0.05) & (left_h2o_dist < left_finger_dist_tolerance)
     left_lift_bonus = torch.where(
         left_object_lifted & left_object_not_lifted, # assign the lift-up bonus once
         torch.zeros_like(successes)+100,
@@ -2097,8 +2176,9 @@ def compute_rewards_async(
     
     # Sync lifting bonus: right object and left object are both lifted in the acceptable time window
     # sync_lifted = (right_object_lifted & left_object_lifted) & object_not_sync_lifted
-    sync_lifted = (right_object_lifted & left_object_lifted) & (torch.abs(right_step_to_lift_counter - left_step_to_lift_counter) < sync_window_size) & \
-                        object_not_sync_lifted
+    sync_lifted = (right_object_lifted & left_object_lifted) & \
+        (torch.abs(right_step_to_lift_counter - left_step_to_lift_counter) < lift_sync_window_size) & \
+            object_not_sync_lifted
     sync_lift_bonus = torch.where(
         sync_lifted,
         torch.zeros_like(successes)+400,
@@ -2192,20 +2272,20 @@ def compute_rewards_async(
     # penalty for moving the object after it reaches the goal
     right_move_penalty_after_reach = torch.where(
         (~right_goal_not_reached) & (~right_goal_reached),
-        -50 * (right_goal_dist + torch.norm(right_object_vel, dim=-1, p=2)),
+        -5 * (right_goal_dist + torch.norm(right_object_vel, dim=-1, p=2)),
         0.0
     )
 
     left_move_penalty_after_reach = torch.where(
         (~left_goal_not_reached) & (~left_goal_reached),
-        -50 * (left_goal_dist + torch.norm(left_object_vel, dim=-1, p=2)),
+        -5 * (left_goal_dist + torch.norm(left_object_vel, dim=-1, p=2)),
         0.0
     )
 
     log_dict["right_move_penalty"] = right_move_penalty_after_reach
     log_dict["left_move_penalty"] = left_move_penalty_after_reach
-    log_dict["right_step_to_reach_counter"] = right_step_to_reach_counter
-    log_dict["left_step_to_reach_counter"] = left_step_to_reach_counter
+    log_dict["right_step_to_goal_counter"] = right_step_to_goal_counter
+    log_dict["left_step_to_goal_counter"] = left_step_to_goal_counter
     log_dict["right_step_to_lift_counter"] = right_step_to_lift_counter
     log_dict["left_step_to_lift_counter"] = left_step_to_lift_counter
     
@@ -2214,9 +2294,10 @@ def compute_rewards_async(
     #     torch.zeros_like(successes) + 2000,
     #     torch.zeros_like(successes)
     # )
-
+    sync_goaled = (right_goal_reached & left_goal_reached) & \
+        (torch.abs(right_step_to_goal_counter - left_step_to_goal_counter) < goal_sync_window_size)
     sync_goal_reached_bonus = torch.where(
-        (right_goal_reached & left_goal_reached) & (torch.abs(right_step_to_reach_counter - left_step_to_reach_counter) < sync_window_size),
+        sync_goaled,
         torch.zeros_like(successes) + 8000,
         torch.zeros_like(successes)
     )

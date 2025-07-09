@@ -307,6 +307,7 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
     # Observations
     obs_type = 'reduced'
     asymmetric_obs = False
+    rnd_obs = False
     control_mode = 'vel'
     use_ref = True
     reward_type = 'async'
@@ -323,186 +324,6 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
     plot_delta_qpos = False
     
     
-
-@configclass
-class HammerAssemblyEnvCfg_vel_wref_sync(HammerAssemblyEnvBaseCfg):
-    control_mode = 'vel'
-    use_ref = True
-    reward_type = 'sync'
-
-
-@configclass
-class HammerAssemblyEnvCfg_pos_wref_sync(HammerAssemblyEnvBaseCfg):
-    control_mode = 'pos'
-    use_ref = True
-    reward_type = 'sync'
-    
-
-@configclass
-class HammerAssemblyEnvCfg_vel_woref_sync(HammerAssemblyEnvBaseCfg):
-    control_mode = 'vel'
-    use_ref = False
-    reward_type = 'sync'
-    
-    
-@configclass
-class HammerAssemblyEnvCfg_pos_woref_sync(HammerAssemblyEnvBaseCfg):
-    control_mode = 'pos'
-    use_ref = False
-    reward_type = 'sync'
-    
-
-# async reward ---- right + left
-@configclass
-class HammerAssemblyEnvCfg_vel_wref_async(HammerAssemblyEnvBaseCfg):
-    control_mode = 'vel'
-    use_ref = True
-    reward_type = 'async'
-
-
-@configclass
-class HammerAssemblyEnvCfg_pos_wref_async(HammerAssemblyEnvBaseCfg):
-    control_mode = 'pos'
-    use_ref = True
-    reward_type = 'async'
-    
-
-@configclass
-class HammerAssemblyEnvCfg_vel_woref_async(HammerAssemblyEnvBaseCfg):
-    control_mode = 'vel'
-    use_ref = False
-    reward_type = 'async'
-    
-    
-@configclass
-class HammerAssemblyEnvCfg_pos_woref_async(HammerAssemblyEnvBaseCfg):
-    control_mode = 'pos'
-    use_ref = False
-    reward_type = 'async'
-    
-
-# async reward ---- right only
-@configclass
-class HammerAssemblyEnvCfg_vel_wref_async_right(HammerAssemblyEnvBaseCfg):
-    action_space = 23
-
-    control_mode = 'vel'
-    use_ref = True
-    reward_type = 'async'
-    use_left_side_reward = False
-    use_right_side_reward = True
-
-
-@configclass
-class HammerAssemblyEnvCfg_pos_wref_async_right(HammerAssemblyEnvBaseCfg):
-    action_space = 23
-
-    control_mode = 'pos'
-    use_ref = True
-    reward_type = 'async'
-    use_left_side_reward = False
-    use_right_side_reward = True
-    
-
-@configclass
-class HammerAssemblyEnvCfg_vel_woref_async_right(HammerAssemblyEnvBaseCfg):
-    action_space = 23
-
-    control_mode = 'vel'
-    use_ref = False
-    reward_type = 'async'
-    use_left_side_reward = False
-    use_right_side_reward = True
-    
-    
-@configclass
-class HammerAssemblyEnvCfg_pos_woref_async_right(HammerAssemblyEnvBaseCfg):
-    action_space = 23
-
-    control_mode = 'pos'
-    use_ref = False
-    reward_type = 'async'
-    use_left_side_reward = False
-    use_right_side_reward = True
-    
-
-# async reward ---- left only
-@configclass
-class HammerAssemblyEnvCfg_vel_wref_async_left(HammerAssemblyEnvBaseCfg):
-    action_space = 23
-
-    control_mode = 'vel'
-    use_ref = True
-    reward_type = 'async'
-    use_left_side_reward = True
-    use_right_side_reward = False
-
-
-@configclass
-class HammerAssemblyEnvCfg_pos_wref_async_left(HammerAssemblyEnvBaseCfg):
-    action_space = 23
-    
-    control_mode = 'pos'
-    use_ref = True
-    reward_type = 'async'
-    use_left_side_reward = True
-    use_right_side_reward = False
-    
-
-@configclass
-class HammerAssemblyEnvCfg_vel_woref_async_left(HammerAssemblyEnvBaseCfg):
-    action_space = 23
-    
-    control_mode = 'vel'
-    use_ref = False
-    reward_type = 'async'
-    use_left_side_reward = True
-    use_right_side_reward = False
-    
-    
-@configclass
-class HammerAssemblyEnvCfg_pos_woref_async_left(HammerAssemblyEnvBaseCfg):
-    action_space = 23
-
-    control_mode = 'pos'
-    use_ref = False
-    reward_type = 'async'
-    use_left_side_reward = True
-    use_right_side_reward = False
-    
-    
-    
-# reach-only, for debugging only
-@configclass
-class HammerAssemblyEnvCfg_vel_woref_async_reach(HammerAssemblyEnvBaseCfg):
-    control_mode = 'vel'
-    use_ref = False
-    reward_type = 'async'
-    reach_only = True
-    
-    
-@configclass
-class HammerAssemblyEnvCfg_pos_woref_async_reach(HammerAssemblyEnvBaseCfg):
-    control_mode = 'pos'
-    use_ref = False
-    reward_type = 'async'
-    reach_only = True
-    
-@configclass
-class HammerAssemblyEnvCfg_vel_woref_sync_reach(HammerAssemblyEnvBaseCfg):
-    control_mode = 'vel'
-    use_ref = False
-    reward_type = 'sync'
-    reach_only = True
-    
-    
-@configclass
-class HammerAssemblyEnvCfg_pos_woref_sync_reach(HammerAssemblyEnvBaseCfg):
-    control_mode = 'pos'
-    use_ref = False
-    reward_type = 'sync'
-    reach_only = True
-
 
 # use object keypoint
 @configclass
@@ -522,6 +343,17 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric(HammerAssemblyEnvBaseC
     use_object_keypoint = True
     
     asymmetric_obs = True
+    
+
+@configclass
+class HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric_rnd(HammerAssemblyEnvBaseCfg):
+    control_mode = 'vel'
+    use_ref = True
+    reward_type = 'async'
+    use_object_keypoint = True
+    
+    asymmetric_obs = True
+    rnd_obs = True
     
 
 
@@ -556,6 +388,23 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric(HammerAssemblyEn
 
 
 @configclass
+class HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric_rnd(HammerAssemblyEnvBaseCfg):
+    action_space = 23
+
+    control_mode = 'vel'
+    use_ref = True
+    reward_type = 'async'
+    use_object_keypoint = True
+    use_coordination_bonus = False
+
+    use_left_side_reward = False
+    use_right_side_reward = True
+
+    asymmetric_obs = True
+    rnd_obs = True
+
+
+@configclass
 class HammerAssemblyEnvCfg_vel_wref_async_kpts_left(HammerAssemblyEnvBaseCfg):
     action_space = 23
     
@@ -583,3 +432,20 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric(HammerAssemblyEnv
     use_right_side_reward = False
 
     asymmetric_obs = True
+
+
+@configclass
+class HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric_rnd(HammerAssemblyEnvBaseCfg):
+    action_space = 23
+    
+    control_mode = 'vel'
+    use_ref = True
+    reward_type = 'async'
+    use_object_keypoint = True
+    use_coordination_bonus = False
+
+    use_left_side_reward = True
+    use_right_side_reward = False
+
+    asymmetric_obs = True
+    rnd_obs = True
