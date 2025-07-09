@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg, RslRlRndCfg
 
 from isaaclab.utils import configclass
 
@@ -50,61 +50,167 @@ class HammerAssemblyPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 # use object keypoint
 @configclass
 class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts(HammerAssemblyPPORunnerCfg):
-    experiment_name = "vel_wref_async_kpts"
+    experiment_name = "bimanual_kpts"
     wandb_kwargs = {
         'entity': 'hilbertxu',
         'project': 'demobot-hammer-assembly',
-        'run_name': 'vel_wref_async_kpts'
+        'run_name': 'bimanual_kpts'
     }
 
 
 # use object keypoint
 @configclass
 class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_asymmetric(HammerAssemblyPPORunnerCfg):
-    experiment_name = "vel_wref_async_kpts_asymmetric"
+    experiment_name = "bimanual_kpts_asymmetric"
     wandb_kwargs = {
         'entity': 'hilbertxu',
         'project': 'demobot-hammer-assembly',
-        'run_name': 'vel_wref_async_kpts_asymmetric'
+        'run_name': 'bimanual_kpts_asymmetric'
+    }
+
+
+@configclass
+class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_asymmetric_rnd(HammerAssemblyPPORunnerCfg):
+    algorithm = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.00,
+        num_learning_epochs=8,
+        num_mini_batches=8,
+        learning_rate=5.0e-4,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.008,
+        max_grad_norm=1.0,
+        rnd_cfg=RslRlRndCfg(
+            weight=500,
+            weight_schedule=RslRlRndCfg.LinearWeightScheduleCfg(
+                final_value=100,
+                initial_step=30000,
+                final_step=22500
+            ),
+            reward_normalization=False,
+            state_normalization=True,
+            learning_rate=3e-4
+        )
+    )
+
+    experiment_name = "bimanual_kpts_asymmetric_rnd"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'demobot-hammer-assembly',
+        'run_name': 'bimanual_kpts_asymmetric_rnd'
     }
     
     
 
 @configclass
 class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_right(HammerAssemblyPPORunnerCfg):
-    experiment_name = "vel_wref_async_kpts_right"
+    experiment_name = "right_kpts"
     wandb_kwargs = {
         'entity': 'hilbertxu',
         'project': 'demobot-hammer-assembly',
-        'run_name': 'vel_wref_async_kpts_right'
+        'run_name': 'right_kpts'
     }
 
 
 @configclass
 class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_right_asymmetric(HammerAssemblyPPORunnerCfg):
-    experiment_name = "vel_wref_async_kpts_right_asymmetric"
+    experiment_name = "right_kpts_asymmetric"
     wandb_kwargs = {
         'entity': 'hilbertxu',
         'project': 'demobot-hammer-assembly',
-        'run_name': 'vel_wref_async_kpts_right_asymmetric'
+        'run_name': 'right_kpts_asymmetric'
+    }
+
+@configclass
+class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_right_asymmetric_rnd(HammerAssemblyPPORunnerCfg):
+
+    algorithm = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.00,
+        num_learning_epochs=8,
+        num_mini_batches=8,
+        learning_rate=5.0e-4,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.008,
+        max_grad_norm=1.0,
+        rnd_cfg=RslRlRndCfg(
+            weight=500,
+            weight_schedule=RslRlRndCfg.LinearWeightScheduleCfg(
+                final_value=100,
+                initial_step=30000,
+                final_step=22500
+            ),
+            reward_normalization=False,
+            state_normalization=True,
+            learning_rate=3e-4
+        )
+    )
+    experiment_name = "right_kpts_asymmetric_rnd"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'demobot-hammer-assembly',
+        'run_name': 'right_kpts_asymmetric_rnd'
     }
     
 
 @configclass
 class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_left(HammerAssemblyPPORunnerCfg):
-    experiment_name = "vel_wref_async_kpts_left"
+    experiment_name = "kpts_left"
     wandb_kwargs = {
         'entity': 'hilbertxu',
         'project': 'demobot-hammer-assembly',
-        'run_name': 'vel_wref_async_kpts_left'
+        'run_name': 'kpts_left'
     }
 
 
 @configclass
 class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_left_asymmetric(HammerAssemblyPPORunnerCfg):
-    experiment_name = "vel_wref_async_kpts_left_asymmetric"
+    experiment_name = "left_kpts_asymmetric"
     wandb_kwargs = {
         'entity': 'hilbertxu',
         'project': 'demobot-hammer-assembly',
-        'run_name': 'vel_wref_async_kpts_left_asymmetric'
+        'run_name': 'left_kpts_asymmetric'
+    }
+
+
+@configclass
+class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_left_asymmetric_rnd(HammerAssemblyPPORunnerCfg):
+    algorithm = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.00,
+        num_learning_epochs=8,
+        num_mini_batches=8,
+        learning_rate=5.0e-4,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.008,
+        max_grad_norm=1.0,
+        rnd_cfg=RslRlRndCfg(
+            weight=500,
+            weight_schedule=RslRlRndCfg.LinearWeightScheduleCfg(
+                final_value=100,
+                initial_step=30000,
+                final_step=22500
+            ),
+            reward_normalization=False,
+            state_normalization=True,
+            learning_rate=3e-4
+        )
+    )
+    experiment_name = "left_kpts_asymmetric_rnd"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'demobot-hammer-assembly',
+        'run_name': 'left_kpts_asymmetric_rnd'
     }
