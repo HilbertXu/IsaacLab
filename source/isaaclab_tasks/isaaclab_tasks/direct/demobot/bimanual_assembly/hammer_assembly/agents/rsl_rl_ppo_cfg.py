@@ -36,6 +36,7 @@ class HammerAssemblyPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         lam=0.95,
         desired_kl=0.008,
         max_grad_norm=1.0,
+        value_normalization=True,
     )
     # set logger to wandb
     logger = 'wandb'

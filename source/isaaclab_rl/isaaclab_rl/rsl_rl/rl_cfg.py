@@ -106,6 +106,9 @@ class RslRlPpoAlgorithmCfg:
     use_clipped_value_loss: bool = MISSING
     """Whether to use clipped value loss."""
 
+    value_normalization: bool = MISSING
+    """Whether to normalize the values."""
+
     clip_param: float = MISSING
     """The clipping parameter for the policy."""
 
