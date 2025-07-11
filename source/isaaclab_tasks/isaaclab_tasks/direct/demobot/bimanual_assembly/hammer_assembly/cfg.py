@@ -44,7 +44,7 @@ from isaaclab.sensors import (
 class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
     # env
     decimation = 2
-    episode_length_s = 10.0
+    episode_length_s = 100.0
     action_scale = 15  # [N]
     action_space = 23 * 2
     observation_space = 0
@@ -272,7 +272,7 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
     num_eval_envs = 100
     
     # replay buffer
-    replay_buffer = 'devel/data/realsense/hammer/bimanual_assembly_v3_fps30/trajectory_franka_allegro.pkl'
+    replay_buffer = 'devel/data/realsense/hammer/bimanual_assembly_v5_fps30/trajectory_franka_allegro.pkl'
     right_object_keypoint = 'devel/assets/hammer_v2/hammer_handle.npz'
     left_object_keypoint = 'devel/assets/hammer_v2/hammer_head.npz'
 
@@ -321,7 +321,7 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
     distance_function = 'mse'
     
     # debug
-    debug = True
+    debug = False
     plot_delta_qpos = False
     
     

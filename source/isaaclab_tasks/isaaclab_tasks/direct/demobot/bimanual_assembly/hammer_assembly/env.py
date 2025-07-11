@@ -216,8 +216,9 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_goal_rot = torch.zeros((self.num_envs, 4), dtype=torch.float, device=self.device)
         self.left_goal_pos = torch.zeros((self.num_envs, 3), dtype=torch.float, device=self.device)
 
-        self.right_object_not_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self.left_object_not_reached = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.right_object_not_reached = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+        self.left_object_not_reached = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+        self.object_not_sync_reached = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
 
         self.right_object_not_lifted = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         self.left_object_not_lifted = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
@@ -255,8 +256,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
 
         self.pos_tolerance_curriculum_step = 100 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 50
-
         self.reset_to_last_success_ratio = 0.5
+
         self.num_eval_envs = self.cfg.num_eval_envs if self.num_envs > self.cfg.num_eval_envs else self.num_envs
         self.eval_env_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.eval_env_mask[:self.num_eval_envs] = torch.tensor(True)
@@ -335,8 +336,9 @@ class HammerAssemblyEnv(DirectRLEnv):
         if self.use_left_side_reward and self.use_right_side_reward:
             self.extras["log"].update(
                 {
+                    "sync_reach_bonus": None,
                     "sync_lift_bonus": None,
-                    "sync_goal_reached_bonus": None,
+                    "sync_goal_bonus": None,
                 }
             )
         
@@ -1228,6 +1230,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             left_object_pos_tolerance=self.left_object_pos_tolerance,
             left_object_rot_tolerance=self.left_object_rot_tolerance,
             left_finger_dist_tolerance=self.left_finger_dist_tolerance,
+            object_not_sync_reached=self.object_not_sync_reached,
             object_not_sync_lifted=self.object_not_sync_lifted,
             action_penalty_scale=self.cfg.action_penalty_scale,
             lift_sync_window_size=self.lift_sync_window_size, 
@@ -1270,13 +1273,13 @@ class HammerAssemblyEnv(DirectRLEnv):
             )
 
             self.right_step_to_goal_counter = torch.where(
-                ((log_dict["right_goal_reached"])),
+                (log_dict["right_goal_reached"]),
                 self.episode_length_buf,
                 self.right_step_to_goal_counter
             )
 
             self.left_step_to_goal_counter = torch.where(
-                ((log_dict["left_goal_reached"])),
+                (log_dict["left_goal_reached"]),
                 self.episode_length_buf,
                 self.left_step_to_goal_counter
             )
@@ -1296,6 +1299,26 @@ class HammerAssemblyEnv(DirectRLEnv):
                 
 
         self.accumulated_rewards = self.accumulated_rewards + total_reward
+        # stage 1 --- reaching stage
+        self.right_object_not_reached = torch.where(
+            log_dict['right_object_reached_bonus'] > 0,
+            torch.tensor(False),
+            self.right_object_not_reached
+        )
+
+        self.left_object_not_reached = torch.where(
+            log_dict['left_object_reached_bonus'] > 0,
+            torch.tensor(False),
+            self.left_object_not_reached
+        )
+
+        self.object_not_sync_reached = torch.where(
+            log_dict['sync_reach_bonus'] > 0,
+            torch.tensor(False),
+            self.object_not_sync_reached
+        )
+
+        # stage 1 --- grasping and lifting stage
         self.right_object_not_lifted = torch.where(
             log_dict['right_lift_bonus'] > 0,
             torch.tensor(False),
@@ -1314,6 +1337,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.object_not_sync_lifted
         )
         
+        # stage 3 --- goal reaching stage
         self.right_goal_not_reached = torch.where(
             log_dict['right_goal_reached_bonus'] > 0,
             torch.tensor(False),
@@ -1326,17 +1350,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.left_goal_not_reached
         )
 
-        self.right_object_not_reached = torch.where(
-            log_dict['right_object_reached_bonus'] > 0,
-            torch.tensor(False),
-            self.right_object_not_reached
-        )
-
-        self.left_object_not_reached = torch.where(
-            log_dict['left_object_reached_bonus'] > 0,
-            torch.tensor(False),
-            self.left_object_not_reached
-        )
+        
 
 
         if "log" not in self.extras:
@@ -1493,14 +1507,19 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.ref_chunk_step_idx[env_ids, 0] = 0
         self.successes[env_ids] = 0
         self.lift_step_counter[env_ids] = 0
+
+        # sparse bonus indicator
+        self.right_object_not_reached[env_ids] = torch.tensor(True)
+        self.left_object_not_reached[env_ids] = torch.tensor(True)
+        self.object_not_sync_reached[env_ids] = torch.tensor(True)
+
         self.right_object_not_lifted[env_ids] = torch.tensor(True)
         self.left_object_not_lifted[env_ids] = torch.tensor(True)
         self.object_not_sync_lifted[env_ids] = torch.tensor(True)
+
         self.right_goal_not_reached[env_ids] = torch.tensor(True)
         self.left_goal_not_reached[env_ids] = torch.tensor(True)
-
-        self.right_object_not_reached[env_ids] = torch.tensor(True)
-        self.left_object_not_reached[env_ids] = torch.tensor(True)
+        
 
         self.right_step_to_goal_counter[env_ids] = 0
         self.left_step_to_goal_counter[env_ids] = 0
@@ -1674,6 +1693,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.last_success_state = self.scene.get_state(is_relative=False)
         self.last_success_prev_targets[env_ids] = self.prev_targets[env_ids]
         self.last_success_cur_targets[env_ids] = self.cur_targets[env_ids]
+        
         self.base_rewards[env_ids] = self.accumulated_rewards[env_ids]
         
         self.right_goal_not_reached[env_ids] = torch.tensor(True)
@@ -1792,19 +1812,21 @@ def check_goal_reached_keypoint(cur_keypoint: torch.Tensor, tgt_keypoint: torch.
     return (dist < pos_tolerance), dist
 
 @torch.jit.script
-def _mse_distance_reward(pos1: torch.Tensor, pos2: torch.Tensor, scale: float = 0.1) -> tuple[torch.Tensor, torch.Tensor]:
-    dist = torch.norm(pos1-pos2, p=2, dim=-1)
+def _mse_distance_reward(dist: torch.Tensor, scale: float = 0.1) -> torch.Tensor:
     rew = (1.0 / (dist + 1.0))
     rew *= rew
 
-    return dist, scale * rew
+    return scale * rew
 
 @torch.jit.script
-def _tanh_distance_reward(pos1: torch.Tensor, pos2: torch.Tensor, std: float = 0.1, scale: float = 1.0) -> tuple[torch.Tensor, torch.Tensor]:
-    dist = torch.norm(pos1-pos2, p=2, dim=-1)
+def _tanh_distance_reward(dist: torch.Tensor, std: float = 0.1, scale: float = 1.0) -> torch.Tensor:
     rew = 1 - torch.tanh(dist / std)
 
-    return dist, scale * rew
+    return scale * rew
+
+@torch.jit.script
+def update_rewards(reward, cond):
+    return torch.where(cond, reward, 0)
 
 
 # @torch.jit.script
@@ -1856,6 +1878,7 @@ def compute_rewards_sync(
     left_object_pos_tolerance: torch.Tensor,
     left_object_rot_tolerance: float,
     left_finger_dist_tolerance: torch.Tensor,
+    object_not_sync_reached: torch.Tensor,
     object_not_sync_lifted: torch.Tensor,
     action_penalty_scale: float,
     lift_sync_window_size: int, 
@@ -2003,7 +2026,7 @@ def compute_rewards_sync(
     
     
 
-# @torch.jit.script
+@torch.jit.script
 def compute_rewards_async(
     reset_goal_buf: torch.Tensor,
     successes: torch.Tensor,
@@ -2052,6 +2075,7 @@ def compute_rewards_async(
     left_object_pos_tolerance: torch.Tensor,
     left_object_rot_tolerance: float,
     left_finger_dist_tolerance: torch.Tensor,
+    object_not_sync_reached: torch.Tensor,
     object_not_sync_lifted: torch.Tensor,
     action_penalty_scale: float,
     lift_sync_window_size: int, 
@@ -2071,6 +2095,8 @@ def compute_rewards_async(
     In this reward function, we separate the lift bonus and goal reaching bonus for right and left hands
     """
     log_dict = {}
+    stage_indicator = torch.zeros_like(successes)
+    rewards = 0.0
     
     # Only for pos control mode
     # 0. pred actions vs ref actions
@@ -2083,13 +2109,13 @@ def compute_rewards_async(
     #     act_dist = torch.zeros_like(successes, dtype=successes.dtype, device=successes.device)
     #     act_dist_reward = torch.zeros_like(successes, dtype=successes.dtype, device=successes.device)
 
-    # Sparse reward version,
-    # Stage-1, reaching
+    ####################
+    # Stage 1, reaching
+    ####################
     right_ee2o_dist = torch.norm(right_ee_pos - right_object_cur_pos, p=2, dim=-1)
-    right_ee2o_reward = (1.0 / (right_ee2o_dist + 1.0))
-    right_ee2o_reward *= right_ee2o_reward
+    right_ee2o_reward = _tanh_distance_reward(right_ee2o_dist, std=0.3, scale=1.0)
 
-    right_object_reached = (right_ee2o_dist < 0.035) & (right_ee_pos[:, 2] < right_object_cur_pos[:, 2])
+    right_object_reached = (right_ee2o_dist < 0.04) & (right_ee_pos[:, 2] - right_object_cur_pos[:, 2] <= 0.0)
     right_object_reached_bonus = torch.where(
         right_object_reached & right_object_not_reached,
         torch.zeros_like(successes)+50,
@@ -2097,14 +2123,43 @@ def compute_rewards_async(
     ).float()
 
     left_ee2o_dist = torch.norm(left_ee_pos - left_object_cur_pos, p=2, dim=-1)
-    left_ee2o_reward = (1.0 / (left_ee2o_dist + 1.0))
-    left_ee2o_reward *= left_ee2o_reward
-    left_object_reached = (left_ee2o_dist < 0.045) & (left_ee_pos[:, 2] - left_object_cur_pos[:, 2] < 0.005)
+    left_ee2o_reward = _tanh_distance_reward(left_ee2o_dist, std=0.3, scale=1.0)
+    left_object_reached = (left_ee2o_dist < 0.04) & (left_ee_pos[:, 2] - left_object_cur_pos[:, 2] <= 0.0 )
     left_object_reached_bonus = torch.where(
         left_object_reached & left_object_not_reached,
         torch.zeros_like(successes)+50,
         torch.zeros_like(successes)
     ).float()
+
+    sync_reached = (right_object_reached) & (left_object_reached)
+    sync_reach_bonus = torch.where(
+        sync_reached & object_not_sync_reached,
+        torch.zeros_like(successes)+75,
+        torch.zeros_like(successes)
+    )
+
+    if use_right_side_reward and use_left_side_reward:
+        stage1_cond = sync_reached
+        stage1_reward = right_ee2o_reward + right_object_reached_bonus \
+            + left_ee2o_reward + left_object_reached_bonus \
+                + sync_reach_bonus
+        
+    elif use_right_side_reward:
+        stage1_cond = right_object_reached
+        stage1_reward = right_ee2o_reward + right_object_reached_bonus
+    
+    else:
+        stage1_cond = left_object_reached
+        stage1_reward = left_ee2o_reward + left_object_reached_bonus
+
+    rewards = rewards + stage1_reward
+
+    # update stage_indicator --- reaching stage
+    stage_indicator = torch.where(
+        stage1_cond,
+        stage_indicator + 1, 
+        stage_indicator
+    )
 
     log_dict['right_ee2o_dist'] = right_ee2o_dist
     log_dict['right_ee2o_dist_reward'] = right_ee2o_reward
@@ -2114,85 +2169,95 @@ def compute_rewards_async(
     log_dict['left_ee2o_dist_reward'] = left_ee2o_reward
     log_dict["left_object_reached"] = left_object_reached
     log_dict["left_object_reached_bonus"] = left_object_reached_bonus
+    log_dict["sync_reach_bonus"] = sync_reach_bonus
+    ####################
+    # stage 1 ends here
+    ####################
 
     
-    # stage-2, grasping and lifting
 
+    # ##############################
+    # stage 2, grasping and lifting
+    ################################
     right_h2o_dist = torch.cdist(right_finger_tips_pos, right_object_grasp_keypoint_cur).min(dim=-1).values
     right_h2o_dist = right_h2o_dist.max(dim=-1).values
-    right_h2o_dist_reward = (1.0 / (right_h2o_dist + 1.0))
-    right_h2o_dist_reward *= right_h2o_dist_reward
-    right_h2o_dist_reward *= 2
-    right_h2o_dist_reward = torch.where(
-        right_object_reached,
-        right_h2o_dist_reward,
-        0.0
-    )
-
+    right_h2o_dist_reward = _tanh_distance_reward(right_h2o_dist, std=0.05, scale=2.0)
+    
     left_h2o_dist = torch.cdist(left_finger_tips_pos, left_object_grasp_keypoint_cur).min(dim=-1).values
     left_h2o_dist = left_h2o_dist.max(dim=-1).values
-    left_h2o_dist_reward = (1.0 / (left_h2o_dist + 1.0))
-    left_h2o_dist_reward *= left_h2o_dist_reward
-    left_h2o_dist_reward *= 2
-    left_h2o_dist_reward = torch.where(
-        left_object_reached,
-        left_h2o_dist_reward,
-        0.0
-    )
-    log_dict['right_h2o_dist'] = right_h2o_dist
-    log_dict['right_h2o_dist_reward'] = right_h2o_dist_reward
-    log_dict['left_h2o_dist'] = left_h2o_dist
-    log_dict['left_h2o_dist_reward'] = left_h2o_dist_reward
-    
-    if use_left_side_reward and use_right_side_reward:
-        rewards = right_ee2o_reward  + right_h2o_dist_reward + right_object_reached_bonus\
-              + left_ee2o_reward + left_h2o_dist_reward + left_object_reached_bonus 
-    elif use_left_side_reward:
-        rewards = left_ee2o_reward + left_h2o_dist_reward + left_object_reached_bonus 
-    else:
-        rewards = right_ee2o_reward + right_h2o_dist_reward + right_object_reached_bonus
-    
-    
+    left_h2o_dist_reward = _tanh_distance_reward(left_h2o_dist, std=0.05, scale=2.0)
+
+
     right_object_lifted = (right_object_keypoint_cur[:, :, 2].min(dim=1).values > right_object_lift_thres) & \
-                            (right_ee2o_dist < 0.05) & (right_h2o_dist < right_finger_dist_tolerance)
+                            (right_h2o_dist < right_finger_dist_tolerance)
     right_lift_bonus = torch.where(
         right_object_lifted & right_object_not_lifted,
         torch.zeros_like(successes)+100,
         torch.zeros_like(successes)
     ).float()
     
-    left_object_lifted = (left_object_keypoint_cur[:, :, 2].min(dim=1).values > left_object_lift_thres)  & \
-                            (left_ee2o_dist < 0.05) & (left_h2o_dist < left_finger_dist_tolerance)
+    left_object_lifted = (left_object_keypoint_cur[:, :, 2].min(dim=1).values > left_object_lift_thres) & \
+                            (left_h2o_dist < left_finger_dist_tolerance)
     left_lift_bonus = torch.where(
         left_object_lifted & left_object_not_lifted, # assign the lift-up bonus once
         torch.zeros_like(successes)+100,
         torch.zeros_like(successes)
     ).float()
 
-    log_dict['right_lift_bonus'] = right_lift_bonus
-    log_dict['left_lift_bonus'] = left_lift_bonus
-    log_dict['right_object_lifted'] = right_object_lifted
-    log_dict['left_object_lifted'] = left_object_lifted
-    
-    # Sync lifting bonus: right object and left object are both lifted in the acceptable time window
-    # sync_lifted = (right_object_lifted & left_object_lifted) & object_not_sync_lifted
+
     sync_lifted = (right_object_lifted & left_object_lifted) & \
-        (torch.abs(right_step_to_lift_counter - left_step_to_lift_counter) < lift_sync_window_size) & \
-            object_not_sync_lifted
+        (torch.abs(right_step_to_lift_counter - left_step_to_lift_counter) < lift_sync_window_size) 
     sync_lift_bonus = torch.where(
-        sync_lifted,
+        sync_lifted & object_not_sync_lifted,
         torch.zeros_like(successes)+400,
         torch.zeros_like(successes)
     )
     
     if use_left_side_reward and use_right_side_reward:
-        object_lifted = right_object_lifted & left_object_lifted
+        stage2_cond = sync_lifted
+        stage2_rewards = right_h2o_dist_reward + right_lift_bonus \
+            + left_h2o_dist_reward + left_lift_bonus \
+                + sync_lift_bonus
+    elif use_right_side_reward:
+        stage2_cond = right_object_lifted
+        stage2_rewards = right_h2o_dist_reward + right_lift_bonus
     else:
-        object_lifted = left_object_lifted | right_object_lifted
+        stage2_cond = left_object_lifted
+        stage2_rewards = left_h2o_dist_reward + left_lift_bonus
 
-    log_dict['sync_lift_bonus'] = sync_lift_bonus
+    # only the agent that completes stage 1 could gain rewards from stage 2
+    rewards = torch.where(
+        stage1_cond,
+        rewards + stage2_rewards,
+        rewards
+    )
 
-    # Stage-2, reaching the sub-goals
+    stage_indicator = torch.where(
+        stage1_cond & stage2_cond,
+        stage_indicator + 1,
+        stage_indicator
+    )
+
+    log_dict['right_h2o_dist'] = right_h2o_dist
+    log_dict['right_object_lifted'] = right_object_lifted
+    log_dict['left_h2o_dist'] = left_h2o_dist
+    log_dict['left_object_lifted'] = left_object_lifted
+
+    # update rewards based on the current stage for logging
+    log_dict['right_h2o_dist_reward'] = update_rewards(right_h2o_dist_reward, stage1_cond)
+    log_dict['right_lift_bonus'] = update_rewards(right_lift_bonus, stage1_cond)
+    log_dict['left_h2o_dist_reward'] = update_rewards(left_h2o_dist_reward, stage1_cond)
+    log_dict['left_lift_bonus'] = update_rewards(left_lift_bonus, stage1_cond)
+    log_dict['sync_lift_bonus'] = update_rewards(sync_lift_bonus, stage1_cond)
+
+    ####################
+    # stage 2 ends here
+    ####################
+
+
+    ##################################
+    # Stage 3, reaching the current sub-goals
+    ##################################
     if not use_object_keypoint:
         right_goal_reached, right_goal_pos_dist, right_goal_rot_dist = check_goal_reached(
             right_object_cur_pos,
@@ -2231,45 +2296,24 @@ def compute_rewards_async(
         log_dict['right_goal_dist'] = right_goal_dist
         log_dict['left_goal_dist'] = left_goal_dist
     
-    # Goal distance reward: only takes into effect when the object are lifted. 
-    # @TODO switch to tanh-based distance rewards?
-    right_goal_dist_reward = (1.0 / (right_goal_dist + 1.0))
-    right_goal_dist_reward *= right_goal_dist_reward
-    right_goal_dist_reward *= 15
-    right_goal_dist_reward = torch.where(
-        right_object_lifted, 
-        right_goal_dist_reward,
-        torch.zeros_like(right_goal_dist_reward)
-    )
-    
-    left_goal_dist_reward = (1.0 / (left_goal_dist + 1.0))
-    left_goal_dist_reward *= left_goal_dist_reward
-    left_goal_dist_reward *= 15
-    left_goal_dist_reward = torch.where(
-        left_object_lifted, 
-        left_goal_dist_reward,
-        torch.zeros_like(left_goal_dist_reward)
-    )
+
+    right_goal_dist_reward = 15 * _tanh_distance_reward(right_goal_dist, std=0.1)
+    left_goal_dist_reward = 15 * _tanh_distance_reward(left_goal_dist, std=0.1)
 
     right_goal_reached_bonus = torch.where(
-        (right_goal_reached & object_lifted) & right_goal_not_reached,
+        right_goal_reached & right_goal_not_reached,
         torch.zeros_like(successes) + 4000,
         torch.zeros_like(successes)
     ).float()
     
     left_goal_reached_bonus = torch.where(
-        (left_goal_reached & object_lifted) & left_goal_not_reached,
+        left_goal_reached & left_goal_not_reached,
         torch.zeros_like(successes) + 4000,
         torch.zeros_like(successes)
     ).float()
-    log_dict['right_goal_reached'] = right_goal_reached
-    log_dict['right_goal_dist_reward'] = right_goal_dist_reward
-    log_dict['right_goal_reached_bonus'] = right_goal_reached_bonus
-    log_dict['left_goal_reached'] = left_goal_reached
-    log_dict['left_goal_dist_reward'] = left_goal_dist_reward
-    log_dict['left_goal_reached_bonus'] = left_goal_reached_bonus
 
-    # penalty for moving the object after it reaches the goal
+
+    # penalty for moving the object after it once reaches the goal
     right_move_penalty_after_reach = torch.where(
         (~right_goal_not_reached) & (~right_goal_reached),
         -5 * (right_goal_dist + torch.norm(right_object_vel, dim=-1, p=2)),
@@ -2282,56 +2326,66 @@ def compute_rewards_async(
         0.0
     )
 
-    log_dict["right_move_penalty"] = right_move_penalty_after_reach
-    log_dict["left_move_penalty"] = left_move_penalty_after_reach
-    log_dict["right_step_to_goal_counter"] = right_step_to_goal_counter
-    log_dict["left_step_to_goal_counter"] = left_step_to_goal_counter
-    log_dict["right_step_to_lift_counter"] = right_step_to_lift_counter
-    log_dict["left_step_to_lift_counter"] = left_step_to_lift_counter
-    
-    # sync_goal_reached_bonus = torch.where(
-    #     right_goal_reached & left_goal_reached,
-    #     torch.zeros_like(successes) + 2000,
-    #     torch.zeros_like(successes)
-    # )
-    sync_goaled = (right_goal_reached & left_goal_reached) & \
+    sync_goaled = ((~right_goal_not_reached) & (~left_goal_not_reached)) & \
         (torch.abs(right_step_to_goal_counter - left_step_to_goal_counter) < goal_sync_window_size)
-    sync_goal_reached_bonus = torch.where(
+    sync_goal_bonus = torch.where(
         sync_goaled,
-        torch.zeros_like(successes) + 8000,
+        torch.zeros_like(successes) + 10000,
         torch.zeros_like(successes)
     )
-    
-    log_dict['sync_goal_reached_bonus'] = sync_goal_reached_bonus
-    
-    if not reach_only:
-        if use_right_side_reward:
-            rewards = rewards + right_lift_bonus + right_goal_dist_reward + right_goal_reached_bonus + right_move_penalty_after_reach
-        if use_left_side_reward:
-            rewards = rewards + left_lift_bonus + left_goal_dist_reward + left_goal_reached_bonus + left_move_penalty_after_reach
-            
-        if use_right_side_reward and use_left_side_reward:
-            rewards = rewards + sync_lift_bonus + sync_goal_reached_bonus
 
-    rewards = rewards * torch.exp(successes)
-       
-    # Find out which envs hit the goal and update successes count
     if use_right_side_reward and use_left_side_reward:
-        goal_resets = torch.where(
-            right_goal_reached & left_goal_reached,
-            torch.ones_like(reset_goal_buf), 
-            reset_goal_buf
-        )
+        stage3_cond = sync_goaled
+        stage3_rewards = right_goal_dist_reward + right_goal_reached_bonus + right_move_penalty_after_reach \
+            + left_goal_dist_reward + left_goal_reached_bonus + left_move_penalty_after_reach \
+                + sync_goal_bonus
+    elif use_right_side_reward:
+        stage3_cond = right_goal_reached
+        stage3_rewards = right_goal_dist_reward + right_goal_reached_bonus + right_move_penalty_after_reach
     else:
-        goal_resets = torch.where(
-            right_goal_reached | left_goal_reached,
-            torch.ones_like(reset_goal_buf), 
-            reset_goal_buf
-        )
+        stage3_cond = left_goal_reached
+        stage3_rewards = left_goal_dist_reward + left_goal_reached_bonus + left_move_penalty_after_reach
+
+    
+    rewards = torch.where(
+        stage1_cond & stage2_cond,
+        rewards + stage3_rewards,
+        rewards
+    )
+
+
+    log_dict['right_goal_reached'] = right_goal_reached
+    log_dict["right_step_to_goal_counter"] = right_step_to_goal_counter
+    log_dict["right_step_to_lift_counter"] = right_step_to_lift_counter
+
+    log_dict['left_goal_reached'] = left_goal_reached
+    log_dict["left_step_to_goal_counter"] = left_step_to_goal_counter
+    log_dict["left_step_to_lift_counter"] = left_step_to_lift_counter
+    
+    log_dict['right_goal_dist_reward'] = update_rewards(right_goal_dist_reward, stage1_cond&stage2_cond)
+    log_dict['right_goal_reached_bonus'] = update_rewards(right_goal_reached_bonus, stage1_cond&stage2_cond)
+    log_dict["right_move_penalty"] = update_rewards(right_move_penalty_after_reach, stage1_cond&stage2_cond)
+    log_dict['left_goal_dist_reward'] = update_rewards(left_goal_dist_reward, stage1_cond&stage2_cond)
+    log_dict['left_goal_reached_bonus'] = update_rewards(left_goal_reached_bonus, stage1_cond&stage2_cond)
+    log_dict["left_move_penalty"] = update_rewards(left_move_penalty_after_reach, stage1_cond&stage2_cond)
+    log_dict['sync_goal_bonus'] = update_rewards(sync_goal_bonus, stage1_cond&stage2_cond)
+
+    ####################
+    # stage 3 ends here
+    ####################
+
+    # Scale up rewards for later stage    
+    rewards = rewards * torch.exp(successes)
+
+    goal_resets = torch.where(
+        stage3_cond,
+        torch.ones_like(reset_goal_buf), 
+        reset_goal_buf
+    )
     successes = successes + goal_resets # success count
     
     return (
-        rewards / 100., goal_resets, successes, log_dict, 
+        rewards / 1000., goal_resets, successes, log_dict, 
     )
 
 
