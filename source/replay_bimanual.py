@@ -27,7 +27,7 @@ parser.add_argument("--num_envs", type=int, default=2, help="Number of environme
 
 parser.add_argument("--data_dir", type=str, default="devel/data")
 parser.add_argument("--assets_dir", type=str, default="devel/assets")
-parser.add_argument("--seq_name", type=str, default="realsense/hammer/bimanual_assembly_v3_fps30")
+parser.add_argument("--seq_name", type=str, default="realsense/hammer/bimanual_assembly_v5_fps30")
 parser.add_argument("--object_mesh_right", type=str, default="hammer_v2/hammer_handle.usd", help="path to the right-side object usd in scene")
 parser.add_argument("--object_mesh_left", type=str, default="hammer_v2/hammer_head.usd", help="path to the left-side object usd in scene")
 parser.add_argument("--trajectory_output_f", type=str, default="trajectory_franka_allegro.pkl", help="path to save the output trajectory")
@@ -315,6 +315,7 @@ class DemoReplay(object):
         
         
         self.init_robot_qpos = None
+        self.object_lifted = False
         self.move_thres_r = args_cli.move_thres_r
         self.move_thres_l = args_cli.move_thres_l
         self.repeat = args_cli.repeat
@@ -384,7 +385,7 @@ class DemoReplay(object):
         self.right_offset = np.asarray([0.65, 0.0, 0.10])
         self.left_offset = np.asarray([0.65, 0.0, 0.10])
         self.right_ee_offset = np.asarray([0.6, -0.05, 0.10])
-        self.left_ee_offset = np.asarray([0.65, 0.0, 0.075])
+        self.left_ee_offset = np.asarray([0.65, 0.0, 0.08])
         self.retarget_data = {}
         for key in retarget_bimanual.keys():
             retarget = retarget_bimanual[key].item()
@@ -600,6 +601,12 @@ class DemoReplay(object):
         self.diff_ik_controller_l.reset()
         self.ik_commands_l[:] = left_goal_ee_pose
         self.ik_commands_l[:, :3] -= self.left_robot_base_offset
+
+        # @NOTE: this is hacky, we found right hand rotation is better for grasping
+        if not self.object_lifted:
+            self.ik_commands_l[:, 3:] = self.ik_commands_r[:, 3:].clone()
+            self.ik_commands_l[:, 4] = -self.ik_commands_l[:, 4]
+            # self.ik_commands_l[:, 6] = -self.ik_commands_l[:, 6]
         self.diff_ik_controller_l.set_command(self.ik_commands_l)
 
         right_hand_qpos = self.joint_pos[:, self.right_hand_joint_ids]
@@ -685,8 +692,7 @@ class DemoReplay(object):
                 diff_l = np.abs(init_left_object_pose[2] - left_goal_object_pose[2])
                 if diff_r > self.move_thres_r and diff_l > self.move_thres_l:
                     chunk_id += 1
-                    print(np.linalg.norm(init_right_object_pose - right_goal_object_pose))
-                    print(np.linalg.norm(init_left_object_pose - left_goal_object_pose))
+                    self.object_lifted = True
                     create_new_chunk(chunk_id=chunk_id, right_obj_pose=right_goal_object_pose, left_obj_pose=left_goal_object_pose)
                 else:
                     merge_current_chunk(chunk_id=chunk_id, right_obj_pose=right_goal_object_pose, left_obj_pose=left_goal_object_pose)
@@ -694,6 +700,7 @@ class DemoReplay(object):
                 if not self.use_selected_keyframes:
                     if len(buffer['action_chunks'][f'chunk_{chunk_id}']['qpos']) > self.min_chunk_steps: # current chunk contains enough steps, create a new action chunk
                         chunk_id += 1
+                        print('object lifted!')
                         create_new_chunk(chunk_id=chunk_id, right_obj_pose=right_goal_object_pose, left_obj_pose=left_goal_object_pose)
                     else: # current chunk does not have enough steps, merge with the next chunk
                         merge_current_chunk(chunk_id=chunk_id, right_obj_pose=right_goal_object_pose, left_obj_pose=left_goal_object_pose)
@@ -777,9 +784,9 @@ class DemoReplay(object):
                 with open(f"{args_cli.data_dir}/{args_cli.seq_name}/{args_cli.trajectory_output_f}", 'wb') as f:
                     pickle.dump(trajectorys, f)
                 break
-
-            
         
+        self.object_lifted = False
+
 def main():
     """Main function."""
     scene_cfg = ReplaySceneCfg(num_envs=args_cli.num_envs, env_spacing=2.0)
@@ -796,3 +803,9 @@ if __name__ == "__main__":
     main()
     # close sim app
     simulation_app.close()
+
+
+
+# @TODO
+# 1. change the replay to reach -> grasp way, similar to the evn
+# 2. change the lift condition from object mass center to keypoints
