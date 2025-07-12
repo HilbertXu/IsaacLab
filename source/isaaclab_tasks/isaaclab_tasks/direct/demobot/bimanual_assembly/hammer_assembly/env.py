@@ -256,7 +256,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
 
         self.pos_tolerance_curriculum_step = 100 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 50
-        self.reset_to_last_success_ratio = 0.5
+        self.reset_to_last_success_ratio = self.cfg.reset_to_last_success_ratio
 
         self.num_eval_envs = self.cfg.num_eval_envs if self.num_envs > self.cfg.num_eval_envs else self.num_envs
         self.eval_env_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -1407,7 +1407,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         right_goal_dist = torch.norm(self.right_object_keypoint_cur - self.right_object_keypoint_goal, p=2, dim=-1).max(dim=1).values
         left_goal_dist = torch.norm(self.left_object_keypoint_cur - self.left_object_keypoint_goal, p=2, dim=-1).max(dim=1).values
 
-        not_reach = (right_goal_dist >= self.cfg.pos_success_tolerance) | (left_goal_dist >= self.cfg.pos_success_tolerance)
+        not_reach = (right_goal_dist >= self.right_object_pos_tolerance) | (left_goal_dist >= self.left_object_pos_tolerance)
         
         # 1. object fall off the table
         fall_terminate = (self.right_object_pos[:, 2] < 0.1) | (self.left_object_pos[:, 2] < 0.1)
