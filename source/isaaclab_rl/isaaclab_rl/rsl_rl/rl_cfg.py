@@ -208,3 +208,12 @@ class RslRlOnPolicyRunnerCfg:
 
     If regex expression, the latest (alphabetical order) matching file will be loaded.
     """
+
+    debug: int = 0 
+    """This controls the logging behavior of the RSL_RL runner.
+    The wandb logging is activated by default
+
+    0: no logs in the console, just a progress bar
+    1: no logs in the console, progress bar with necessary values
+    2: full logs in the console, no progress bar
+    """

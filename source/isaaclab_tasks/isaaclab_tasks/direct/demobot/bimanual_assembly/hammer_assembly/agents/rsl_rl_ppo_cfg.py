@@ -47,6 +47,8 @@ class HammerAssemblyPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         'run_name': 'base'
     }
 
+    debug = 1
+
 
 # use object keypoint
 @configclass
