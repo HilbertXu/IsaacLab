@@ -127,6 +127,11 @@ class RslRlPpoAlgorithmCfg:
     in which case RND is not used.
     """
 
+    enable_amp: bool = False
+    """Whether to enable pytorch amp."""
+
+    
+
 
 #########################
 # Runner configurations #
@@ -217,3 +222,6 @@ class RslRlOnPolicyRunnerCfg:
     1: no logs in the console, progress bar with necessary values
     2: full logs in the console, no progress bar
     """
+
+    sweep: bool = False
+    """Whether we are trying to sweep hyperparameters."""

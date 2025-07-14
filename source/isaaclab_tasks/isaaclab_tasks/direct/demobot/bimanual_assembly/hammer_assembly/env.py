@@ -256,6 +256,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
 
         self.pos_tolerance_curriculum_step = 100 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 50
+        self.pos_tolerance_reduce = 0.001 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 0.005
         self.reset_to_last_success_ratio = 0.5
 
         self.num_eval_envs = self.cfg.num_eval_envs if self.num_envs > self.cfg.num_eval_envs else self.num_envs
@@ -282,6 +283,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.use_left_side_reward = self.cfg.use_left_side_reward
         self.use_object_keypoint = self.cfg.use_object_keypoint
         self.distance_function = self.cfg.distance_function
+        self.sweep = self.cfg.sweep
 
         self.init_step = True
     
@@ -504,6 +506,9 @@ class HammerAssemblyEnv(DirectRLEnv):
     def _retrieve_ref_actions(self, chunk_step_idx, ref_actions, normalize=False):
         chunk_ids = chunk_step_idx[:, 0]
         step_ids = chunk_step_idx[:, 1]
+
+        step_ids = torch.clamp(step_ids, max=self.ref_chunk_max_steps[chunk_ids]-1)
+
         ref_action = ref_actions[chunk_ids, step_ids, :].clone()
 
         if normalize:
@@ -1368,11 +1373,11 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.extras["log"] = dict()
         self.extras["log"]["common_step_counter"] = float(self.common_step_counter)
         self.extras["log"]["reset_to_last_success_ratio"] = float(self.reset_to_last_success_ratio)
-        self.extras["log"]["consecutive_successes"] = self.successes
-        self.extras["log"]["lift_thresh"] = self.right_object_lift_thresh.mean()
-        self.extras["log"]["lift_episode_counter"] = self.lift_episode_counter.mean()
-        self.extras["log"]["goal_reach_thresh"] = self.right_object_pos_tolerance.mean()
-        self.extras["log"]["goal_reach_episode_counter"] = self.goal_reach_episode_counter.mean()
+        self.extras["log"]["consecutive_successes"] = self.successes.clone().detach()
+        self.extras["log"]["lift_thresh"] = self.right_object_lift_thresh.mean().clone().detach()
+        self.extras["log"]["lift_episode_counter"] = self.lift_episode_counter.mean().clone().detach()
+        self.extras["log"]["goal_reach_thresh"] = self.right_object_pos_tolerance.mean().clone().detach()
+        self.extras["log"]["goal_reach_episode_counter"] = self.goal_reach_episode_counter.mean().clone().detach()
 
         # keep tracking of the max consecutive successes for each eval envs
         self.eval_consecutive_successes = torch.maximum(self.successes, self.eval_consecutive_successes)
@@ -1382,13 +1387,13 @@ class HammerAssemblyEnv(DirectRLEnv):
                 continue
 
             if self.use_left_side_reward and 'left' in k:
-                self.extras["log"][k] = log_dict[k]
+                self.extras["log"][k] = log_dict[k].clone().detach()
             
             if self.use_right_side_reward and 'right' in k:
-                self.extras["log"][k] = log_dict[k]
+                self.extras["log"][k] = log_dict[k].clone().detach()
             
             if self.use_right_side_reward and self.use_left_side_reward and 'sync' in k:
-                self.extras["log"][k] = log_dict[k]
+                self.extras["log"][k] = log_dict[k].clone().detach()
 
             # if k not in self.episode_log.keys():
             #     self.episode_log[k] = [log_dict[k][0].item()]
@@ -1511,7 +1516,9 @@ class HammerAssemblyEnv(DirectRLEnv):
         if len(eval_env_ids) > 0:
             self.csbuffer.extend(self.eval_consecutive_successes[eval_env_ids].cpu().numpy().tolist())
 
-        self._compute_curriculum(env_ids)
+        # In sweep mode, the curriculum is not activated
+        if not self.sweep:
+            self._compute_curriculum(env_ids)
 
         # reset in chunk steps
         self.ref_chunk_step_idx[env_ids, 1] = 0
@@ -1820,19 +1827,19 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.reset_to_last_success_ratio = max(self.reset_to_last_success_ratio-0.05, 0.05)
 
         # reduce the threshold for reaching the sub goal
-        if len(self.csbuffer) > self.num_eval_envs and statistics.mean(self.csbuffer) > self.max_consecutive_success - 1:
+        if len(self.csbuffer) > self.num_eval_envs and statistics.mean(self.csbuffer) > self.max_consecutive_success - 0.5:
             self.goal_reach_episode_counter[env_ids] += 1
             # self.csbuffer.clear() # reset buffer
 
         self.right_object_pos_tolerance[env_ids] = torch.where(
             self.goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
-            torch.clamp(self.right_object_pos_tolerance[env_ids] - 0.001, min=0.005),
+            torch.clamp(self.right_object_pos_tolerance[env_ids] - self.pos_tolerance_reduce, min=0.005),
             self.right_object_pos_tolerance[env_ids]
         )
 
         self.left_object_pos_tolerance[env_ids] = torch.where(
             self.goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
-            torch.clamp(self.left_object_pos_tolerance[env_ids] - 0.001, min=0.005),
+            torch.clamp(self.left_object_pos_tolerance[env_ids] - self.pos_tolerance_reduce, min=0.005),
             self.left_object_pos_tolerance[env_ids]
         )
 

@@ -276,28 +276,34 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
     right_object_keypoint = 'devel/assets/hammer_v2/hammer_handle.npz'
     left_object_keypoint = 'devel/assets/hammer_v2/hammer_head.npz'
 
-    # env
-    max_consecutive_success = 0
-    act_moving_average = 0.75
-    reset_to_last_success_ratio = 0.5
-    
-    
-    # action
-    hand_dof_speed_scale = 1.0
-    action_scale = 1.0
-    
+    # reward scales
     # reset
     reset_position_noise = 0.01  # range of position at reset
     reset_rotation_noise = 0.1
     reset_dof_pos_noise = 0.05  # range of dof pos at reset
     reset_dof_vel_noise = 0.0  # range of dof vel at reset
-    
-    # obs scales
-    vel_obs_scale = 0.2
-    force_torque_obs_scale = 10.0
-    
-    # rewards
+    # reward scales
+    dist_reward_scale = 1.0
+    rot_reward_scale = 1.0
+    rot_eps = 0.1
     action_penalty_scale = -0.001
+    reach_goal_bonus = 4000
+    object_lifted_bonus = 50
+    object_moved_bonus = 5
+    fall_penalty = 0
+    out_of_reach_dist = 0.24
+    vel_obs_scale = 0.2
+    max_consecutive_success = 0
+    av_factor = 0.1
+    act_moving_average = 0.75
+    force_torque_obs_scale = 10.0
+
+    pos_success_tolerance = 0.0125
+    rot_success_tolerance = 0.2
+    finger_pos_success_tolerance = 0.15
+    hand_dof_speed_scale = 1.0
+    action_res_scale = 1.0
+    early_complete_threshold = 5
     
     # Observations
     obs_type = 'reduced'
@@ -312,11 +318,12 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
     enable_gravity = True
     use_object_keypoint = False
     use_coordination_bonus = True
-    distance_function = 'tanh'
+    distance_function = 'mse'
     
     # debug
     debug = False
     plot_delta_qpos = False
+    sweep = False
     
     
 

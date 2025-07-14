@@ -37,6 +37,7 @@ class HammerAssemblyPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.008,
         max_grad_norm=1.0,
         value_normalization=True,
+        enable_amp=True,
     )
     # set logger to wandb
     logger = 'wandb'
@@ -48,6 +49,7 @@ class HammerAssemblyPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     }
 
     debug = 1
+    sweep = False
 
 
 # use object keypoint
