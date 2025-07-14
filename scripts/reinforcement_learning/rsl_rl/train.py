@@ -28,6 +28,7 @@ parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy 
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
+parser.add_argument("--amp", type=bool, default=False, help="whether to enable amp for PPO")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -109,6 +110,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
+    agent_cfg.algorithm.enable_amp = args_cli.amp
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
@@ -191,3 +193,4 @@ if __name__ == "__main__":
     main()
     # close sim app
     simulation_app.close()
+
