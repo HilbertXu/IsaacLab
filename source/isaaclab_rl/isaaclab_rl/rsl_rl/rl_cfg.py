@@ -127,6 +127,9 @@ class RslRlPpoAlgorithmCfg:
     in which case RND is not used.
     """
 
+    enable_amp: bool = False
+    """Whether to enable pytorch amp."""
+
 
 #########################
 # Runner configurations #
