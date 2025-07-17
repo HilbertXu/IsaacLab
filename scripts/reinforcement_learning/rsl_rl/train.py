@@ -28,7 +28,8 @@ parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy 
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
-parser.add_argument("--amp", type=bool, default=False, help="whether to enable amp for PPO")
+parser.add_argument("--amp", action='store_true', default=False, help="whether to enable amp for PPO")
+parser.add_argument("--project", type=str, default=None)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -117,6 +118,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
+    if args_cli.project is not None:
+        agent_cfg.wandb_kwargs['project'] = args_cli.project
+
     # multi-gpu training configuration
     if args_cli.distributed:
         env_cfg.sim.device = f"cuda:{app_launcher.local_rank}"
@@ -193,4 +197,5 @@ if __name__ == "__main__":
     main()
     # close sim app
     simulation_app.close()
+
 
