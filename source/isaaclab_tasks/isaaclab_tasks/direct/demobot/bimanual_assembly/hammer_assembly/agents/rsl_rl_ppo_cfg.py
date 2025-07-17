@@ -11,7 +11,7 @@ from isaaclab.utils import configclass
 @configclass
 class HammerAssemblyPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     # device = "cpu"
-    num_steps_per_env = 16
+    num_steps_per_env = 24
     max_iterations = 100000
     save_interval = 1000
     empirical_normalization = True
@@ -24,12 +24,12 @@ class HammerAssemblyPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         zero_init=True,
     )
     algorithm = RslRlPpoAlgorithmCfg(
-        value_loss_coef=1.0,
+        value_loss_coef=0.5,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.00,
-        num_learning_epochs=8,
-        num_mini_batches=8,
+        entropy_coef=5.0e-5,
+        num_learning_epochs=4,
+        num_mini_batches=32,
         learning_rate=5.0e-4,
         schedule="adaptive",
         gamma=0.99,
@@ -49,6 +49,7 @@ class HammerAssemblyPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     }
 
     debug = 1
+    sweep = False
 
 
 # use object keypoint
