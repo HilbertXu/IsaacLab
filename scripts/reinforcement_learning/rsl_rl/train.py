@@ -30,6 +30,7 @@ parser.add_argument(
 )
 parser.add_argument("--amp", action='store_true', default=False, help="whether to enable amp for PPO")
 parser.add_argument("--project", type=str, default=None)
+parser.add_argument("--reset_ratio", type=float, default=0.75)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -117,6 +118,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    env_cfg.reset_to_last_success_ratio = args_cli.reset_ratio
 
     if args_cli.project is not None:
         agent_cfg.wandb_kwargs['project'] = args_cli.project
@@ -197,5 +199,6 @@ if __name__ == "__main__":
     main()
     # close sim app
     simulation_app.close()
+
 
 
