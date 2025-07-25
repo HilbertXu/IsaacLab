@@ -3,7 +3,7 @@ Author: Yucheng Xu
 Date: 4 Mar 2025
 Description: 
     This script receive the retargeted robot hand motions and object motions from FoundationPose.
-    These motions are replayed in simulation to record robot joint angles. 
+    These motions are replayed in simulation to record robot joint angles with synchorinized right & left robots
 Usage:
     ./isaaclab.sh -p devel/replay.py --robot_usd /path/to/robot use --retarget /path/to/retarget file --camera /path/to/camera extrinsics
 
@@ -27,7 +27,7 @@ parser.add_argument("--num_envs", type=int, default=2, help="Number of environme
 
 parser.add_argument("--data_dir", type=str, default="devel/data")
 parser.add_argument("--assets_dir", type=str, default="devel/assets")
-parser.add_argument("--seq_name", type=str, default="realsense/hammer/bimanual_assembly_v5_fps30")
+parser.add_argument("--seq_name", type=str, default="realsense/hammer/bimanual_assembly_separate_fps30")
 parser.add_argument("--object_mesh_right", type=str, default="hammer_v2/hammer_handle.usd", help="path to the right-side object usd in scene")
 parser.add_argument("--object_mesh_left", type=str, default="hammer_v2/hammer_head.usd", help="path to the left-side object usd in scene")
 parser.add_argument("--trajectory_output_f", type=str, default="trajectory_franka_allegro.pkl", help="path to save the output trajectory")
@@ -41,6 +41,7 @@ parser.add_argument("--save_interval", type=int, default=2)
 parser.add_argument("--use_selected_keyframes", type=bool, default=True)
 parser.add_argument("--debug", type=int, default=1, help="turn on debug visualization or not")
 parser.add_argument("--repeat", action='store_true', default=False, help="replay the trajectory repeatly")
+parser.add_argument("--separate", action='store_true', default=False)
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -480,11 +481,11 @@ class DemoReplay(object):
         reached = self.check_reached(position_error, axis_angle_error)
         if self.debug:
             self.ee_r_marker.visualize(ee_pose_w[:, 0:3], ee_pose_w[:, 3:7])
-            # self.goal_r_marker.visualize(
-            #     self.ik_commands_r[:, 0:3] + self.right_robot_base_offset + self.scene.env_origins, 
-            #     self.ik_commands_r[:, 3:7]
-            # )
-            # self.obj_r_marker.visualize(self.object_root_state_r[:, 0:3], self.object_root_state_r[:, 3:7])
+            self.goal_r_marker.visualize(
+                self.ik_commands_r[:, 0:3] + self.right_robot_base_offset + self.scene.env_origins, 
+                self.ik_commands_r[:, 3:7]
+            )
+            self.obj_r_marker.visualize(self.object_root_state_r[:, 0:3], self.object_root_state_r[:, 3:7])
 
         return joint_pos_des, reached
 
@@ -517,11 +518,11 @@ class DemoReplay(object):
 
         if self.debug:
             self.ee_l_marker.visualize(ee_pose_w[:, 0:3], ee_pose_w[:, 3:7])
-            # self.goal_l_marker.visualize(
-            #     self.ik_commands_l[:, 0:3] + self.left_robot_base_offset + self.scene.env_origins, 
-            #     self.ik_commands_l[:, 3:7]
-            # )
-            # self.obj_l_marker.visualize(self.object_root_state_l[:, 0:3], self.object_root_state_l[:, 3:7])
+            self.goal_l_marker.visualize(
+                self.ik_commands_l[:, 0:3] + self.left_robot_base_offset + self.scene.env_origins, 
+                self.ik_commands_l[:, 3:7]
+            )
+            self.obj_l_marker.visualize(self.object_root_state_l[:, 0:3], self.object_root_state_l[:, 3:7])
 
         return joint_pos_des, reached
 
@@ -602,11 +603,6 @@ class DemoReplay(object):
         self.ik_commands_l[:] = left_goal_ee_pose
         self.ik_commands_l[:, :3] -= self.left_robot_base_offset
 
-        # @NOTE: this is hacky, we found right hand rotation is better for grasping
-        if not self.object_lifted:
-            self.ik_commands_l[:, 3:] = self.ik_commands_r[:, 3:].clone()
-            self.ik_commands_l[:, 4] = -self.ik_commands_l[:, 4]
-            # self.ik_commands_l[:, 6] = -self.ik_commands_l[:, 6]
         self.diff_ik_controller_l.set_command(self.ik_commands_l)
 
         right_hand_qpos = self.joint_pos[:, self.right_hand_joint_ids]
@@ -743,6 +739,10 @@ class DemoReplay(object):
                 right_object_pose=cur_goal_object_pose_rw, 
                 left_object_pose=cur_goal_object_pose_lw,
             )
+            print("init right ee pose: ", self.retarget_data['right']['ref_ee_pose'][start_idx, :])
+            print("init left ee pose: ", self.retarget_data['left']['ref_ee_pose'][start_idx, :])
+
+
             trajectorys['init_robot_qpos'] = init_robot_qpos
             trajectorys['init_object_pose.right'] = cur_goal_object_pose_rb
             trajectorys['init_object_pose.left'] = cur_goal_object_pose_lb
@@ -774,6 +774,8 @@ class DemoReplay(object):
                     right_hand_ref_qpos=self.retarget_data['right']['ref_hand_qpos'][waypoint_idx, :], 
                     left_hand_ref_qpos=self.retarget_data['left']['ref_hand_qpos'][waypoint_idx, :], 
                 )
+                print(f"{waypoint_idx}-th right ee pose: ", self.retarget_data['right']['ref_ee_pose'][waypoint_idx, :])
+                print(f"{waypoint_idx}-th left ee pose: ", self.retarget_data['left']['ref_ee_pose'][waypoint_idx, :])
             
                 trajectorys['action_chunks'][f'chunk_{chunk_id}']['qpos'].extend(actions)
             

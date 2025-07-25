@@ -18,10 +18,11 @@ class HammerAssemblyPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_eval_envs = 100
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
+        actor_hidden_dims=[1024, 512, 256],
+        critic_hidden_dims=[1024, 512, 256],
         activation="elu",
         zero_init=True,
+        noise_std_type='log'
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=0.5,
@@ -37,7 +38,7 @@ class HammerAssemblyPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.008,
         max_grad_norm=1.0,
         value_normalization=True,
-        enable_amp=True,
+        enable_amp=False,
     )
     # set logger to wandb
     logger = 'wandb'

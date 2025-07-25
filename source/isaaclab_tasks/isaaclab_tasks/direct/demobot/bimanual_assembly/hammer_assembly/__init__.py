@@ -19,7 +19,7 @@ inhand_task_entry = "isaaclab_tasks.direct.demobot.bimanual_assembly.hammer_asse
 # bimanual envs
 ###############
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-v0",
+    id="Bimanual-Hammer-Assembly-Sync-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -31,7 +31,7 @@ gym.register(
 
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Asymmetric-v0",
+    id="Bimanual-Hammer-Assembly-Sync-Asymmetric-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -42,7 +42,7 @@ gym.register(
 )
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Asymmetric-v1",
+    id="Bimanual-Hammer-Assembly-Sync-Asymmetric-v1",
     entry_point=f"{inhand_task_entry}.env_v1:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -54,7 +54,7 @@ gym.register(
 
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Asymmetric-RND-v0",
+    id="Bimanual-Hammer-Assembly-Sync-Asymmetric-RND-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -69,7 +69,7 @@ gym.register(
 # right hand envs
 ###############
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Right-v0",
+    id="Bimanual-Hammer-Assembly-Sync-Right-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -81,7 +81,7 @@ gym.register(
 
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Right-Asymmetric-v0",
+    id="Bimanual-Hammer-Assembly-Sync-Right-Asymmetric-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -93,7 +93,7 @@ gym.register(
 
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Right-Asymmetric-v1",
+    id="Bimanual-Hammer-Assembly-Sync-Right-Asymmetric-v1",
     entry_point=f"{inhand_task_entry}.env_v1:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -104,7 +104,7 @@ gym.register(
 )
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Right-Asymmetric-v1",
+    id="Bimanual-Hammer-Assembly-Sync-Right-Asymmetric-v1",
     entry_point=f"{inhand_task_entry}.env_v1:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -116,7 +116,7 @@ gym.register(
 
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Right-Asymmetric-RND-v0",
+    id="Bimanual-Hammer-Assembly-Sync-Right-Asymmetric-RND-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -133,7 +133,7 @@ gym.register(
 # left hand envs
 ###############
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Left-v0",
+    id="Bimanual-Hammer-Assembly-Sync-Left-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -145,7 +145,7 @@ gym.register(
 
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Left-Asymmetric-v0",
+    id="Bimanual-Hammer-Assembly-Sync-Left-Asymmetric-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -156,7 +156,7 @@ gym.register(
 )
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Left-Asymmetric-v1",
+    id="Bimanual-Hammer-Assembly-Sync-Left-Asymmetric-v1",
     entry_point=f"{inhand_task_entry}.env_v1:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -168,7 +168,7 @@ gym.register(
 
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Left-Asymmetric-RND-v0",
+    id="Bimanual-Hammer-Assembly-Sync-Left-Asymmetric-RND-v0",
     entry_point=f"{inhand_task_entry}.env:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -184,7 +184,7 @@ gym.register(
 ###############
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-v0-Eval",
+    id="Bimanual-Hammer-Assembly-Sync-v0-Eval",
     entry_point=f"{inhand_task_entry}.env_eval:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -196,7 +196,7 @@ gym.register(
 
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Right-v0-Eval",
+    id="Bimanual-Hammer-Assembly-Sync-Right-v0-Eval",
     entry_point=f"{inhand_task_entry}.env_eval:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -208,7 +208,7 @@ gym.register(
 
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Left-v0-Eval",
+    id="Bimanual-Hammer-Assembly-Sync-Left-v0-Eval",
     entry_point=f"{inhand_task_entry}.env_eval:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -220,7 +220,7 @@ gym.register(
 
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Right-Asymmetric-Eval",
+    id="Bimanual-Hammer-Assembly-Sync-Right-Asymmetric-Eval",
     entry_point=f"{inhand_task_entry}.env_eval:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={
@@ -231,7 +231,7 @@ gym.register(
 )
 
 gym.register(
-    id="Bimanual-Hammer-Assembly-Vel-WRef-Async-Kpts-Left-Asymmetric-Eval",
+    id="Bimanual-Hammer-Assembly-Sync-Left-Asymmetric-Eval",
     entry_point=f"{inhand_task_entry}.env_eval:HammerAssemblyEnv",
     disable_env_checker=True,
     kwargs={

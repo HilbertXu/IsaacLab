@@ -381,8 +381,9 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
 
         self.pos_tolerance_curriculum_step = 100 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 50
-        self.pos_tolerance_reduce = 0.001 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 0.005
-        self.reset_to_last_success_ratio = 0.75
+        self.pos_tolerance_reduce = 0.002 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 0.005
+        self.reset_to_last_success_ratio = getattr(self.cfg, "reset_to_last_success_ratio", 0.75)
+        print("reset_to_last_success_ratio: ", self.reset_to_last_success_ratio)
 
 
         #####################
@@ -659,7 +660,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         # 1. put tanh inside the PPO (done)
         # 2. debug the thumb issue
         # 3. try position control
-        self.pred_actions[:] = torch.nn.functional.tanh(actions).clone() # normalized to [-1, 1]
+        self.pred_actions[:] = actions.clone().clamp(-1.0, 1.0)
         
         if self.use_ref:
             # # Read reference trajectory
@@ -982,18 +983,18 @@ class HammerAssemblyEnv(DirectRLEnv):
         # compute distance values for reward calculation
 
         # For reaching stage
-        self.right_ee2o_dist = torch.norm(self.right_ee_pos - self.right_object_pos, p=2, dim=-1)
-        self.left_ee2o_dist = torch.norm(self.left_ee_pos - self.left_object_pos, p=2, dim=-1)
-        self.right_h2o_dist = (torch.cdist(self.right_fingertip_pos, self.right_object_grasp_keypoint_cur).min(dim=-1).values).max(dim=-1).values
-        self.left_h2o_dist = (torch.cdist(self.left_fingertip_pos, self.left_object_grasp_keypoint_cur).min(dim=-1).values).max(dim=-1).values
+        self.right_ee2o_dist = torch.clamp(torch.norm(self.right_ee_pos - self.right_object_pos, p=2, dim=-1), min=-9.0, max=9.0)
+        self.left_ee2o_dist = torch.clamp(torch.norm(self.left_ee_pos - self.left_object_pos, p=2, dim=-1), min=-9.0, max=9.0)
+        self.right_h2o_dist = torch.clamp((torch.cdist(self.right_fingertip_pos, self.right_object_grasp_keypoint_cur).min(dim=-1).values).max(dim=-1).values, min=-9.0, max=9.0)
+        self.left_h2o_dist = torch.clamp((torch.cdist(self.left_fingertip_pos, self.left_object_grasp_keypoint_cur).min(dim=-1).values).max(dim=-1).values, min=-9.0, max=9.0)
 
         # For lifting stage, we only care about the z-axis translation
-        self.right_lift_height = (self.right_object_keypoint_cur[:, :, 2] - self.right_object_keypoint_init[:, :, 2]).min(dim=-1).values
-        self.left_lift_height = (self.left_object_keypoint_cur[:, :, 2] - self.left_object_keypoint_init[:, :, 2]).min(dim=-1).values
+        self.right_lift_height = torch.clamp((self.right_object_keypoint_cur[:, :, 2] - self.right_object_keypoint_init[:, :, 2]).min(dim=-1).values, min=-9.0, max=9.0)
+        self.left_lift_height = torch.clamp((self.left_object_keypoint_cur[:, :, 2] - self.left_object_keypoint_init[:, :, 2]).min(dim=-1).values, min=-9.0, max=9.0)
 
         # For goaling stage
-        self.right_goal_dist = torch.norm(self.right_object_keypoint_cur - self.right_object_keypoint_goal, p=2, dim=-1).max(dim=-1).values
-        self.left_goal_dist = torch.norm(self.left_object_keypoint_cur - self.left_object_keypoint_goal, p=2, dim=-1).max(dim=-1).values
+        self.right_goal_dist = torch.clamp(torch.norm(self.right_object_keypoint_cur - self.right_object_keypoint_goal, p=2, dim=-1).max(dim=-1).values, min=-9.0, max=9.0)
+        self.left_goal_dist = torch.clamp(torch.norm(self.left_object_keypoint_cur - self.left_object_keypoint_goal, p=2, dim=-1).max(dim=-1).values, min=-9.0, max=9.0)
 
         # compute reaching state
         self.right_object_reached = (self.right_ee2o_dist < 0.04) & (self.right_ee_pos[:, 2] - self.right_object_pos[:, 2] <= 0.0)
@@ -1042,13 +1043,13 @@ class HammerAssemblyEnv(DirectRLEnv):
 
         # update reward_stage_indicator for goaling stage
         self.reward_stage_indicator = torch.where(
-            self.goal_sync_reached,
+            self.object_sync_reached & self.object_sync_lifted & self.goal_sync_reached,
             3.0,
             self.reward_stage_indicator
         )
 
         # compute penalty items
-        self.action_penalty = torch.norm(self.pred_actions[:], p=2, dim=-1)
+        self.action_penalty = torch.norm(self.pred_actions, p=2, dim=-1)
         self.right_moving_penalty = self.right_goal_dist + torch.norm(self.right_object_vel, dim=-1, p=2)
         self.left_moving_penalty = self.left_goal_dist + torch.norm(self.left_object_vel, dim=-1, p=2)
 
@@ -1501,8 +1502,8 @@ class HammerAssemblyEnv(DirectRLEnv):
                 dof_pos = self.robot.data.default_joint_pos[env_ids]
                 dof_vel = self.robot.data.default_joint_vel[env_ids]
 
-            self.prev_targets[env_ids] = dof_pos
-            self.cur_targets[env_ids] = dof_pos
+            self.prev_targets[env_ids] = dof_pos.clone()
+            self.cur_targets[env_ids] = dof_pos.clone()
 
             self.robot.set_joint_position_target(dof_pos, env_ids=env_ids)
             self.robot.write_joint_state_to_sim(dof_pos, dof_vel, env_ids=env_ids)
@@ -1889,7 +1890,7 @@ def scale(x, lower, upper):
 
 @torch.jit.script
 def unscale(x, lower, upper):
-    return (2.0 * x - upper - lower) / (upper - lower)
+    return (2.0 * x - upper - lower) / (upper - lower + 1e-6)
 
 
 @torch.jit.script
@@ -2042,12 +2043,8 @@ def compute_rewards_async(
     # ##############################
     # stage 2, grasping and lifting
     ################################
-    right_h2o_dist = right_h2o_dist.max(dim=-1).values
     right_h2o_dist_reward = _tanh_distance_reward(right_h2o_dist, std=0.05, scale=2.0)
-    
-    left_h2o_dist = left_h2o_dist.max(dim=-1).values
     left_h2o_dist_reward = _tanh_distance_reward(left_h2o_dist, std=0.05, scale=2.0)
-
 
     right_lift_bonus = torch.where(
         right_object_lifted & right_object_not_lifted,
@@ -2175,7 +2172,7 @@ def compute_rewards_async(
     ####################
 
     # Scale up rewards for later stage    
-    rewards = rewards * torch.exp(successes)
+    rewards = rewards * torch.exp(successes) - 0.001 * action_penalty
 
     goal_resets = torch.where(
         reward_stage_indicator == 3,
@@ -2194,3 +2191,4 @@ def compute_rewards_async(
 # Check object pos, palm pos are correct? 
 # add stable condition for reaching the sub-goals
 # add a counter for counting how many step it takes for reaching the right goal and left goal
+# fuck
