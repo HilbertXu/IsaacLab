@@ -163,12 +163,9 @@ def launch_sweep(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvC
         
         # --- A. Suggest and Reconfigure Environment Hyperparameters ---
         
-        # Get the unwrapped env to access its properties directly
-        unwrapped_env = env.unwrapped.unwrapped
-        
-        reset_to_last_success_ratio = trial.suggest_categorical("reset_to_last_success_ratio", [0.75])
+        reset_to_last_success_ratio = trial.suggest_categorical("reset_to_last_success_ratio", [0.75, 0.5, 0.25, 0.0])
         # IMPORTANT: Directly set the attribute on the running environment instance
-        unwrapped_env.reset_to_last_success_ratio = reset_to_last_success_ratio
+        env.set_reset_ratio(reset_to_last_success_ratio)
         
         # --- B. Suggest and Create a New Agent/Runner Config for this trial ---
         trial_agent_cfg = copy.deepcopy(agent_cfg) # The agent config can be safely copied
@@ -246,15 +243,15 @@ def launch_sweep(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvC
 	}
     
     pruner = MedianPruner(
-        n_startup_trials=5,  # Allow first 5 trials to complete without pruning
+        n_startup_trials=3,  # Allow first 5 trials to complete without pruning
         n_warmup_steps=4000,  # Warmup for 2000 iterations before pruning
         interval_steps=100   # Check for pruning every 100 iterations
     )
     sampler = optuna.samplers.TPESampler(n_startup_trials=args_cli.num_trials)
     
-    os.makedirs(os.path.join("source", "rsl_rl", "optuna_sweep", agent_cfg.experiment_name), exist_ok=True)
+    os.makedirs(os.path.join("source", "logs", "rsl_rl", "optuna_sweep", agent_cfg.experiment_name), exist_ok=True)
     study = optuna.create_study(
-        storage=f'sqlite:///{os.path.join("source", "rsl_rl", "optuna_sweep", agent_cfg.experiment_name, "sweep.db")}',
+        storage=f'sqlite:///{os.path.join("source", "logs", "rsl_rl", "optuna_sweep", agent_cfg.experiment_name, "sweep.db")}',
         sampler=sampler,
         pruner=pruner,
         study_name=args_cli.study_name,
