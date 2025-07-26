@@ -13,6 +13,7 @@ import numpy as np
 import pickle
 import math
 from typing import Optional, Union
+import time
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, AssetBase, RigidObject, RigidObjectCfg
@@ -399,6 +400,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             "lift_episode_counter": None,
             "goal_reach_thresh": None,
             "goal_reach_episode_counter": None,
+            "finger_distance_thresh": None,
             "reward_stage_indicator": None,
         }
         
@@ -989,16 +991,37 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_h2o_dist = torch.clamp((torch.cdist(self.left_fingertip_pos, self.left_object_grasp_keypoint_cur).min(dim=-1).values).max(dim=-1).values, min=-9.0, max=9.0)
 
         # For lifting stage, we only care about the z-axis translation
-        self.right_lift_height = torch.clamp((self.right_object_keypoint_cur[:, :, 2] - self.right_object_keypoint_init[:, :, 2]).min(dim=-1).values, min=-9.0, max=9.0)
-        self.left_lift_height = torch.clamp((self.left_object_keypoint_cur[:, :, 2] - self.left_object_keypoint_init[:, :, 2]).min(dim=-1).values, min=-9.0, max=9.0)
+        # 1. successes == 0, objects are not lifted, use keypoints to make sure that the agent won't try to 'flip' the object
+        # 2. successes > 0, object already lifted to the first goal, use object mass center height for relaxation
+
+        self.right_lift_height = torch.where(
+            self.successes == 0,
+            torch.clamp((self.right_object_keypoint_cur[:, :, 2] - self.right_object_keypoint_init[:, :, 2]).min(dim=-1).values, min=-9.0, max=9.0),
+            torch.clamp(self.right_object_pos[:, 2] - self.right_object_init_pos[2], min=-9.0, max=9.0),
+        )
+        self.left_lift_height = torch.where(
+            self.successes == 0,
+            torch.clamp((self.left_object_keypoint_cur[:, :, 2] - self.left_object_keypoint_init[:, :, 2]).min(dim=-1).values, min=-9.0, max=9.0),
+            torch.clamp(self.left_object_pos[:, 2] - self.left_object_init_pos[2], min=-9.0, max=9.0),
+        )
 
         # For goaling stage
         self.right_goal_dist = torch.clamp(torch.norm(self.right_object_keypoint_cur - self.right_object_keypoint_goal, p=2, dim=-1).max(dim=-1).values, min=-9.0, max=9.0)
         self.left_goal_dist = torch.clamp(torch.norm(self.left_object_keypoint_cur - self.left_object_keypoint_goal, p=2, dim=-1).max(dim=-1).values, min=-9.0, max=9.0)
 
         # compute reaching state
-        self.right_object_reached = (self.right_ee2o_dist < 0.04) & (self.right_ee_pos[:, 2] - self.right_object_pos[:, 2] <= 0.0)
-        self.left_object_reached = (self.left_ee2o_dist < 0.04) & (self.left_ee_pos[:, 2] - self.left_object_pos[:, 2] <= 0.0)
+        # 1. successes == 0, objects are not reached, use a strict condition for accurate reaching
+        # 2. successes > 0, object already lifted to the first goal, use a relaxed condition to allow more in-hand adjustment
+        self.right_object_reached = torch.where(
+            self.successes == 0,
+            (self.right_ee2o_dist < 0.04) & (self.right_ee_pos[:, 2] - self.right_object_pos[:, 2] <= 0.0),
+            (self.right_ee2o_dist < 0.07)
+        )
+        self.left_object_reached = torch.where(
+            self.successes == 0,
+            (self.left_ee2o_dist < 0.04) & (self.left_ee_pos[:, 2] - self.left_object_pos[:, 2] <= 0.0),
+            (self.left_ee2o_dist < 0.07)
+        )
         self.object_sync_reached = _compute_sync_state(
             right_state=self.right_object_reached, 
             left_state=self.left_object_reached, 
@@ -1025,7 +1048,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         )
         # update reward_stage_indicator for lifting stage
         self.reward_stage_indicator = torch.where(
-            self.object_sync_reached & self.object_sync_lifted,
+            (self.object_sync_reached & self.object_sync_lifted),
             2.0,
             self.reward_stage_indicator
         )
@@ -1053,6 +1076,30 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.right_moving_penalty = self.right_goal_dist + torch.norm(self.right_object_vel, dim=-1, p=2)
         self.left_moving_penalty = self.left_goal_dist + torch.norm(self.left_object_vel, dim=-1, p=2)
 
+        # print("*"*100)
+        # print(self.reward_stage_indicator)
+        # print("reach condition: ")
+        # print(self.right_object_reached, self.left_object_reached)
+        # print("lifting condition: ")
+        # print("right object cur height (kpts): ", self.right_object_keypoint_cur[:, :, 2])
+        # print("left object cur height (kpts): ", self.left_object_keypoint_cur[:, :, 2])
+        # print("right object init height (kpts): ", self.right_object_keypoint_init[:, :, 2])
+        # print("left object init height (kpts): ", self.left_object_keypoint_init[:, :, 2])
+
+        # print("right object cur height: ", self.right_object_pos[:, 2])
+        # print("left object cur height: ", self.left_object_pos[:, 2])
+        # print("right object init height: ", self.right_object_init_pos[2])
+        # print("left object init height: ", self.left_object_init_pos[2])
+        # print("right object height: ", self.right_lift_height)
+        # print("left object height: ", self.left_lift_height)
+        # print("right object height: ", self.right_lift_height > self.right_object_lift_thresh)
+        # print("left object height: ", self.left_lift_height > self.left_object_lift_thresh)
+        # print("right finger distance: ", self.right_h2o_dist)
+        # print("left finger distance: ", self.left_h2o_dist)
+        # print("right finger distance: ", self.right_h2o_dist < self.right_finger_dist_tolerance)
+        # print("left finger distance: ", self.left_h2o_dist < self.left_finger_dist_tolerance)
+        # print(self.right_object_lifted, self.left_object_lifted)
+        # print()
 
     def _get_observations(self) -> dict:
         if self.cfg.asymmetric_obs:
@@ -1410,6 +1457,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.extras["log"]["goal_reach_thresh"] = self.right_object_pos_tolerance.mean().clone().detach()
         self.extras["log"]["goal_reach_episode_counter"] = self.goal_reach_episode_counter.mean().clone().detach()
         self.extras["log"]["reward_stage_indicator"] = self.reward_stage_indicator.mean().clone().detach()
+        self.extras["log"]["finger_distance_thresh"] = self.right_finger_dist_tolerance.mean().clone()
+        self.extras["log"]["finger_distance_thresh"] = self.right_finger_dist_tolerance.mean().clone()
 
         self.extras["log"]["step_to_lift_left"] = self.step_to_lift_left.mean().clone().detach()
         self.extras["log"]["step_to_goal_left"] = self.step_to_goal_left.mean().clone().detach()
@@ -1448,7 +1497,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         #   |-- the object dropped after being lifted
         #   |-- we reached the last sub-goal
         fall_terminated = (self.right_object_pos[:, 2] < 0.1) | (self.left_object_pos[:, 2] < 0.1)
-        drop_terminated = ((self.right_object_pos[:, 2] < 0.15)| (self.left_object_pos[:, 2] < 0.15)) & (self.successes > 1)
+        drop_terminated = (~self.right_object_lifted | ~self.left_object_lifted) & (self.successes > 1)
         
         succeed_terminated = self.successes >= self.max_consecutive_success
 
