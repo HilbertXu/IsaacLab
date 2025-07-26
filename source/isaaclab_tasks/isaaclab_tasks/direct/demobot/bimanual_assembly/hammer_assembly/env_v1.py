@@ -585,6 +585,11 @@ class HammerAssemblyEnv(DirectRLEnv):
                 "/World/envs/env_0/Robot"
             ]
         )
+
+    
+    def set_reset_ratio(self, ratio):
+        print(f"reset_to_last_success_ratio from {self.reset_to_last_success_ratio} to {ratio}: ")
+        self.reset_to_last_success_ratio = ratio
     
 
     def _retrieve_ref_actions(self, chunk_step_idx, ref_actions, normalize=False):

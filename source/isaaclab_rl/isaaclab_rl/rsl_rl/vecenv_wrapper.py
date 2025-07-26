@@ -140,7 +140,7 @@ class RslRlVecEnvWrapper(VecEnv):
         else:
             obs_dict = self.unwrapped._get_observations()
         return obs_dict["policy"], {"observations": obs_dict}
-
+    
     @property
     def episode_length_buf(self) -> torch.Tensor:
         """The episode length buffer."""
@@ -207,3 +207,7 @@ class RslRlVecEnvWrapper(VecEnv):
         self.env.unwrapped.action_space = gym.vector.utils.batch_space(
             self.env.unwrapped.single_action_space, self.num_envs
         )
+    
+
+    def set_reset_ratio(self, ratio):
+        self.unwrapped.set_reset_ratio(ratio)
