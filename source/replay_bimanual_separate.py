@@ -37,7 +37,7 @@ parser.add_argument("--move_thres_l", type=float, default=0.1, help="threshold f
 parser.add_argument("--ik_ee_name_r", type=str, default="right_hand_base_link", help="name of the body, use as the end-effector in IK calculation")
 parser.add_argument("--ik_ee_name_l", type=str, default="left_hand_base_link", help="name of the body, use as the end-effector in IK calculation")
 parser.add_argument("--min_chunk_steps", type=int, default=50, help="Minimal action steps in a chunk")
-parser.add_argument("--save_interval", type=int, default=1)
+parser.add_argument("--save_interval", type=int, default=2)
 parser.add_argument("--use_selected_keyframes", type=bool, default=True)
 parser.add_argument("--debug", type=int, default=1, help="turn on debug visualization or not")
 parser.add_argument("--repeat", action='store_true', default=False, help="replay the trajectory repeatly")
@@ -758,7 +758,6 @@ class DemoReplay(object):
             for waypoint_idx in range(start_idx+1, self.num_waypoints):
                 print(waypoint_idx, self.switch_indices, self.keyframe_indices)
                 
-
                 cur_goal_object_pose_rw, cur_goal_object_pose_rb = self.transform_object_pose_cam_to_world(
                     self.retarget_data['right']['ref_obj_pose'][waypoint_idx, :],
                     offset=self.right_offset

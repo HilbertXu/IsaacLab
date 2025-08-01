@@ -908,3 +908,36 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric_rnd(HammerAssembl
 
     asymmetric_obs = True
     rnd_obs = True
+    
+
+############
+# baselines
+############
+@configclass
+class BaselineCfg_pos_noref(HammerAssemblyEnvBaseCfg):
+    control_mode = 'pos'
+    use_ref = False
+    reward_type = 'async'
+    use_object_keypoint = True
+    
+    asymmetric_obs = True
+
+
+@configclass
+class BaselineCfg_pos(HammerAssemblyEnvBaseCfg):
+    control_mode = 'pos'
+    use_ref = True
+    reward_type = 'async'
+    use_object_keypoint = True
+    
+    asymmetric_obs = True
+
+
+@configclass
+class BaselineCfg_posv2(HammerAssemblyEnvBaseCfg):
+    control_mode = 'pos_v2'
+    use_ref = True
+    reward_type = 'async'
+    use_object_keypoint = True
+    
+    asymmetric_obs = True

@@ -37,14 +37,14 @@ class HammerAssemblyPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.008,
         max_grad_norm=1.0,
         value_normalization=True,
-        enable_amp=True,
+        enable_amp=False,
     )
     # set logger to wandb
     logger = 'wandb'
     experiment_name = "base"
     wandb_kwargs = {
         'entity': 'hilbertxu',
-        'project': 'demobot-hammer-assembly',
+        'project': 'demobot-hammer-assembly-async',
         'run_name': 'base'
     }
 
@@ -55,10 +55,10 @@ class HammerAssemblyPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 # use object keypoint
 @configclass
 class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts(HammerAssemblyPPORunnerCfg):
-    experiment_name = "bimanual_kpts"
+    experiment_name = "bimanual_kpts_async"
     wandb_kwargs = {
         'entity': 'hilbertxu',
-        'project': 'demobot-hammer-assembly',
+        'project': 'demobot-hammer-assembly-async',
         'run_name': 'bimanual_kpts'
     }
 
@@ -66,10 +66,10 @@ class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts(HammerAssemblyPPORunnerCfg)
 # use object keypoint
 @configclass
 class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_asymmetric(HammerAssemblyPPORunnerCfg):
-    experiment_name = "bimanual_kpts_asymmetric"
+    experiment_name = "bimanual_kpts_asymmetric_sync"
     wandb_kwargs = {
         'entity': 'hilbertxu',
-        'project': 'demobot-hammer-assembly',
+        'project': 'demobot-hammer-assembly-async',
         'run_name': 'bimanual_kpts_asymmetric'
     }
 
@@ -102,10 +102,10 @@ class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_asymmetric_rnd(HammerAssemb
         )
     )
 
-    experiment_name = "bimanual_kpts_asymmetric_rnd"
+    experiment_name = "bimanual_kpts_asymmetric_rnd_async"
     wandb_kwargs = {
         'entity': 'hilbertxu',
-        'project': 'demobot-hammer-assembly',
+        'project': 'demobot-hammer-assembly-async',
         'run_name': 'bimanual_kpts_asymmetric_rnd'
     }
     
@@ -113,20 +113,20 @@ class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_asymmetric_rnd(HammerAssemb
 
 @configclass
 class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_right(HammerAssemblyPPORunnerCfg):
-    experiment_name = "right_kpts"
+    experiment_name = "right_kpts_async"
     wandb_kwargs = {
         'entity': 'hilbertxu',
-        'project': 'demobot-hammer-assembly',
+        'project': 'demobot-hammer-assembly-async',
         'run_name': 'right_kpts'
     }
 
 
 @configclass
 class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_right_asymmetric(HammerAssemblyPPORunnerCfg):
-    experiment_name = "right_kpts_asymmetric"
+    experiment_name = "right_kpts_asymmetric_async"
     wandb_kwargs = {
         'entity': 'hilbertxu',
-        'project': 'demobot-hammer-assembly',
+        'project': 'demobot-hammer-assembly-async',
         'run_name': 'right_kpts_asymmetric'
     }
 
@@ -158,30 +158,30 @@ class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_right_asymmetric_rnd(Hammer
             learning_rate=3e-4
         )
     )
-    experiment_name = "right_kpts_asymmetric_rnd"
+    experiment_name = "right_kpts_asymmetric_rnd_async"
     wandb_kwargs = {
         'entity': 'hilbertxu',
-        'project': 'demobot-hammer-assembly',
+        'project': 'demobot-hammer-assembly-async',
         'run_name': 'right_kpts_asymmetric_rnd'
     }
     
 
 @configclass
 class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_left(HammerAssemblyPPORunnerCfg):
-    experiment_name = "kpts_left"
+    experiment_name = "kpts_left_async"
     wandb_kwargs = {
         'entity': 'hilbertxu',
-        'project': 'demobot-hammer-assembly',
+        'project': 'demobot-hammer-assembly-async',
         'run_name': 'kpts_left'
     }
 
 
 @configclass
 class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_left_asymmetric(HammerAssemblyPPORunnerCfg):
-    experiment_name = "left_kpts_asymmetric"
+    experiment_name = "left_kpts_asymmetric_async"
     wandb_kwargs = {
         'entity': 'hilbertxu',
-        'project': 'demobot-hammer-assembly',
+        'project': 'demobot-hammer-assembly-async',
         'run_name': 'left_kpts_asymmetric'
     }
 
@@ -213,9 +213,9 @@ class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_left_asymmetric_rnd(HammerA
             learning_rate=3e-4
         )
     )
-    experiment_name = "left_kpts_asymmetric_rnd"
+    experiment_name = "left_kpts_asymmetric_rnd_async"
     wandb_kwargs = {
         'entity': 'hilbertxu',
-        'project': 'demobot-hammer-assembly',
+        'project': 'demobot-hammer-assembly-async',
         'run_name': 'left_kpts_asymmetric_rnd'
     }

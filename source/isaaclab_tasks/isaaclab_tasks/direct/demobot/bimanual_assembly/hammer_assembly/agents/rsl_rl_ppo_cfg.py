@@ -220,3 +220,33 @@ class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_left_asymmetric_rnd(HammerA
         'project': 'demobot-hammer-assembly',
         'run_name': 'left_kpts_asymmetric_rnd'
     }
+
+############
+# baselines
+############
+@configclass
+class BaselinePPORunnerCfg_pos(HammerAssemblyPPORunnerCfg):
+    experiment_name = "baseline_pos"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'demobot-hammer-assembly',
+        'run_name': 'baseline_pos'
+    }
+
+@configclass
+class BaselinePPORunnerCfg_posv2(HammerAssemblyPPORunnerCfg):
+    experiment_name = "baseline_posv2"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'demobot-hammer-assembly',
+        'run_name': 'baseline_posv2'
+    }
+
+@configclass
+class BaselinePPORunnerCfg_pos_noref(HammerAssemblyPPORunnerCfg):
+    experiment_name = "baseline_pos_noref"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'demobot-hammer-assembly',
+        'run_name': 'baseline_pos_noref'
+    }

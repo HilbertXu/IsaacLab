@@ -610,23 +610,25 @@ class HammerAssemblyEnv(DirectRLEnv):
             return ref_action
 
     
-
-    def _compute_action(self, ref_actions, pred_actions):
-        if self.use_right_side_reward and not self.use_left_side_reward:
-            out = self.robot.data.default_joint_pos[:].clone()
-            out[:, self.right_joint_indices] = ref_actions[:, self.right_joint_indices] + \
-                                                self.robot_dof_speed_scales[:, self.right_joint_indices] * self.dt * pred_actions * self.cfg.action_scale
-        
-        
-        if self.use_left_side_reward and not self.use_right_side_reward:
-            out = self.robot.data.default_joint_pos[:].clone()
-            out[:, self.left_joint_indices] = ref_actions[:, self.left_joint_indices] + \
-                                                self.robot_dof_speed_scales[:, self.left_joint_indices] * self.dt * pred_actions * self.cfg.action_scale
-        
-        if self.use_left_side_reward and self.use_right_side_reward:
-            out = ref_actions + \
-                self.robot_dof_speed_scales * self.dt * pred_actions * self.cfg.action_scale
-        
+    def _compute_action(self, pred_actions, ref_actions=None):
+        if self.use_ref and ref_actions is not None:
+            if self.use_right_side_reward and not self.use_left_side_reward:
+                out = self.robot.data.default_joint_pos[:].clone()
+                out[:, self.right_joint_indices] = ref_actions[:, self.right_joint_indices] + \
+                                                    self.robot_dof_speed_scales[:, self.right_joint_indices] * self.dt * pred_actions * self.cfg.action_scale
+            
+            if self.use_left_side_reward and not self.use_right_side_reward:
+                out = self.robot.data.default_joint_pos[:].clone()
+                out[:, self.left_joint_indices] = ref_actions[:, self.left_joint_indices] + \
+                                                    self.robot_dof_speed_scales[:, self.left_joint_indices] * self.dt * pred_actions * self.cfg.action_scale
+            
+            if self.use_left_side_reward and self.use_right_side_reward:
+                out = ref_actions + \
+                    self.robot_dof_speed_scales * self.dt * pred_actions * self.cfg.action_scale
+        else:
+            out = pred_actions.clone()
+            
+        # with ref trajectory, we keep the hand open until the object is reached
         out_fix_hand = out.clone()
         out_fix_hand[:, self.hand_joint_indices] = self.robot.data.default_joint_pos[:, self.hand_joint_indices]
 
@@ -639,12 +641,6 @@ class HammerAssemblyEnv(DirectRLEnv):
             out,
             out_fix_hand
         )
-
-        # right_joint7_idx = self.robot.joint_names.index('right_panda_joint_7')
-        # left_joint7_idx = self.robot.joint_names.index('left_panda_joint_7')
-
-        # out[:, right_joint7_idx] = self.robot_dof_upper_limits[:, right_joint7_idx] / 2
-
             
         return out
 
@@ -661,10 +657,6 @@ class HammerAssemblyEnv(DirectRLEnv):
         in the current reference trajectory, an offset is applied to the object pose, check the replay.py script
         '''
         
-        # @TODO
-        # 1. put tanh inside the PPO (done)
-        # 2. debug the thumb issue
-        # 3. try position control
         self.pred_actions[:] = actions.clone().clamp(-1.0, 1.0)
         
         if self.use_ref:
@@ -678,7 +670,8 @@ class HammerAssemblyEnv(DirectRLEnv):
             ref_action = self.prev_targets[:].clone() # no ref, start with all zero actions.
         
         self.robot_dof_targets[:] = self._compute_action(
-            ref_action, self.pred_actions, 
+            ref_actions=ref_action, 
+            pred_actions=self.pred_actions, 
         )
 
         self.cur_targets = self.robot_dof_targets[:].clone()
@@ -705,16 +698,17 @@ class HammerAssemblyEnv(DirectRLEnv):
         in the current reference trajectory, an offset is applied to the object pose, check the replay.py script
         '''
         
-        # @TODO
-        # 1. put tanh inside the PPO
-        # 2. debug the thumb issue
-        # 3. try position control
         self.pred_actions[:] = torch.nn.functional.tanh(actions).clone() # normalized to [-1, 1]
         
-        self.cur_targets = scale(
+        pred_actions = scale(
             self.pred_actions,
             self.robot_dof_lower_limits,
             self.robot_dof_upper_limits
+        )
+
+        self.cur_targets = self._compute_action(
+            pred_actions=pred_actions,
+            ref_actions=None
         )
         
         self.cur_targets = (
@@ -738,10 +732,6 @@ class HammerAssemblyEnv(DirectRLEnv):
         in the current reference trajectory, an offset is applied to the object pose, check the replay.py script
         '''
         
-        # @TODO
-        # 1. put tanh inside the PPO
-        # 2. debug the thumb issue
-        # 3. try position control
         self.pred_actions[:] = torch.nn.functional.tanh(actions).clone() # normalized to [-1, 1]
 
         ref_action = self._retrieve_ref_actions(
@@ -750,10 +740,15 @@ class HammerAssemblyEnv(DirectRLEnv):
             normalize=True
         )
 
-        self.cur_targets = scale(
+        cur_targets = scale(
             torch.clamp(ref_action+self.pred_actions, min=-1, max=1),
             self.robot_dof_lower_limits,
             self.robot_dof_upper_limits
+        )
+
+        self.cur_targets = self._compute_action(
+            pred_actions=cur_targets,
+            ref_actions=None
         )
         
         self.cur_targets = (
@@ -994,16 +989,37 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_h2o_dist = torch.clamp((torch.cdist(self.left_fingertip_pos, self.left_object_grasp_keypoint_cur).min(dim=-1).values).max(dim=-1).values, min=-9.0, max=9.0)
 
         # For lifting stage, we only care about the z-axis translation
-        self.right_lift_height = torch.clamp((self.right_object_keypoint_cur[:, :, 2] - self.right_object_keypoint_init[:, :, 2]).min(dim=-1).values, min=-9.0, max=9.0)
-        self.left_lift_height = torch.clamp((self.left_object_keypoint_cur[:, :, 2] - self.left_object_keypoint_init[:, :, 2]).min(dim=-1).values, min=-9.0, max=9.0)
+        # 1. successes == 0, objects are not lifted, use keypoints to make sure that the agent won't try to 'flip' the object
+        # 2. successes > 0, object already lifted to the first goal, use object mass center height for relaxation
+
+        self.right_lift_height = torch.where(
+            self.successes == 0,
+            torch.clamp((self.right_object_keypoint_cur[:, :, 2] - self.right_object_keypoint_init[:, :, 2]).min(dim=-1).values, min=-9.0, max=9.0),
+            torch.clamp(self.right_object_pos[:, 2] - self.right_object_init_pos[2], min=-9.0, max=9.0),
+        )
+        self.left_lift_height = torch.where(
+            self.successes == 0,
+            torch.clamp((self.left_object_keypoint_cur[:, :, 2] - self.left_object_keypoint_init[:, :, 2]).min(dim=-1).values, min=-9.0, max=9.0),
+            torch.clamp(self.left_object_pos[:, 2] - self.left_object_init_pos[2], min=-9.0, max=9.0),
+        )
 
         # For goaling stage
         self.right_goal_dist = torch.clamp(torch.norm(self.right_object_keypoint_cur - self.right_object_keypoint_goal, p=2, dim=-1).max(dim=-1).values, min=-9.0, max=9.0)
         self.left_goal_dist = torch.clamp(torch.norm(self.left_object_keypoint_cur - self.left_object_keypoint_goal, p=2, dim=-1).max(dim=-1).values, min=-9.0, max=9.0)
 
         # compute reaching state
-        self.right_object_reached = (self.right_ee2o_dist < 0.04) & (self.right_ee_pos[:, 2] - self.right_object_pos[:, 2] <= 0.0)
-        self.left_object_reached = (self.left_ee2o_dist < 0.04) & (self.left_ee_pos[:, 2] - self.left_object_pos[:, 2] <= 0.0)
+        # 1. successes == 0, objects are not reached, use a strict condition for accurate reaching
+        # 2. successes > 0, object already lifted to the first goal, use a relaxed condition to allow more in-hand adjustment
+        self.right_object_reached = torch.where(
+            self.successes == 0,
+            (self.right_ee2o_dist < 0.04) & (self.right_ee_pos[:, 2] - self.right_object_pos[:, 2] <= 0.0),
+            (self.right_ee2o_dist < 0.07)
+        )
+        self.left_object_reached = torch.where(
+            self.successes == 0,
+            (self.left_ee2o_dist < 0.04) & (self.left_ee_pos[:, 2] - self.left_object_pos[:, 2] <= 0.0),
+            (self.left_ee2o_dist < 0.07)
+        )
         self.object_sync_reached = _compute_sync_state(
             right_state=self.right_object_reached, 
             left_state=self.left_object_reached, 
@@ -1058,6 +1074,30 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.right_moving_penalty = self.right_goal_dist + torch.norm(self.right_object_vel, dim=-1, p=2)
         self.left_moving_penalty = self.left_goal_dist + torch.norm(self.left_object_vel, dim=-1, p=2)
 
+        # print("*"*100)
+        # print(self.reward_stage_indicator)
+        # print("reach condition: ")
+        # print(self.right_object_reached, self.left_object_reached)
+        # print("lifting condition: ")
+        # print("right object cur height (kpts): ", self.right_object_keypoint_cur[:, :, 2])
+        # print("left object cur height (kpts): ", self.left_object_keypoint_cur[:, :, 2])
+        # print("right object init height (kpts): ", self.right_object_keypoint_init[:, :, 2])
+        # print("left object init height (kpts): ", self.left_object_keypoint_init[:, :, 2])
+
+        # print("right object cur height: ", self.right_object_pos[:, 2])
+        # print("left object cur height: ", self.left_object_pos[:, 2])
+        # print("right object init height: ", self.right_object_init_pos[2])
+        # print("left object init height: ", self.left_object_init_pos[2])
+        # print("right object height: ", self.right_lift_height)
+        # print("left object height: ", self.left_lift_height)
+        # print("right object height: ", self.right_lift_height > self.right_object_lift_thresh)
+        # print("left object height: ", self.left_lift_height > self.left_object_lift_thresh)
+        # print("right finger distance: ", self.right_h2o_dist)
+        # print("left finger distance: ", self.left_h2o_dist)
+        # print("right finger distance: ", self.right_h2o_dist < self.right_finger_dist_tolerance)
+        # print("left finger distance: ", self.left_h2o_dist < self.left_finger_dist_tolerance)
+        # print(self.right_object_lifted, self.left_object_lifted)
+        # print()
 
     def _get_observations(self) -> dict:
         if self.cfg.asymmetric_obs:
@@ -1453,7 +1493,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         #   |-- the object dropped after being lifted
         #   |-- we reached the last sub-goal
         fall_terminated = (self.right_object_pos[:, 2] < 0.1) | (self.left_object_pos[:, 2] < 0.1)
-        drop_terminated = ((self.right_object_pos[:, 2] < 0.15)| (self.left_object_pos[:, 2] < 0.15)) & (self.successes > 1)
+        drop_terminated = (~self.right_object_lifted | ~self.left_object_lifted) & (self.successes > 1)
         
         succeed_terminated = self.successes >= self.max_consecutive_success
 
