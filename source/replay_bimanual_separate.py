@@ -41,7 +41,7 @@ parser.add_argument("--save_interval", type=int, default=2)
 parser.add_argument("--use_selected_keyframes", type=bool, default=True)
 parser.add_argument("--debug", type=int, default=1, help="turn on debug visualization or not")
 parser.add_argument("--repeat", action='store_true', default=False, help="replay the trajectory repeatly")
-parser.add_argument("--separate", action='store_true', default=False)
+parser.add_argument("--separate", action='store_true', default=True)
 parser.add_argument("--switch_point", type=int, default=3)
 parser.add_argument("--order", type=str, default='left_right')
 
@@ -336,11 +336,13 @@ class DemoReplay(object):
         self.left_robot_entity_cfg.resolve(self.scene)
 
         self.right_arm_joint_ids = self.right_arm_entity_cfg.joint_ids
+        self.right_arm_joint_names = self.right_arm_entity_cfg.joint_names
         self.right_hand_joint_ids = self.right_hand_entity_cfg.joint_ids
         self.right_robot_joint_ids = self.right_robot_entity_cfg.joint_ids
         self.right_robot_joint_names = self.right_robot_entity_cfg.joint_names
 
         self.left_arm_joint_ids = self.left_arm_entity_cfg.joint_ids
+        self.left_arm_joint_names = self.left_arm_entity_cfg.joint_names
         self.left_hand_joint_ids = self.left_hand_entity_cfg.joint_ids
         self.left_robot_joint_ids = self.left_robot_entity_cfg.joint_ids
         self.left_robot_joint_names = self.left_robot_entity_cfg.joint_names
@@ -389,7 +391,7 @@ class DemoReplay(object):
         retarget_bimanual = np.load(retarget_f, allow_pickle=True)
         self.right_offset = np.asarray([0.65, 0.0, 0.10])
         self.left_offset = np.asarray([0.65, 0.0, 0.10])
-        self.right_ee_offset = np.asarray([0.6, -0.05, 0.10])
+        self.right_ee_offset = np.asarray([0.6, 0.0, 0.10])
         self.left_ee_offset = np.asarray([0.65, 0.0, 0.08])
         self.retarget_data = {}
         for key in retarget_bimanual.keys():
@@ -435,7 +437,17 @@ class DemoReplay(object):
         self.keyframe_indices = np.asarray([all_images.index(n) for n in keyframes])
         self.num_keyframes = len(self.keyframe_indices)
 
-        self.switch_indices = self.keyframe_indices[args_cli.switch_point-1]
+
+        # in async mode, we record keyframes for left and right separately
+        right_keyframes = sorted(os.listdir(f"{args_cli.data_dir}/{args_cli.seq_name}/right_kf_rgb"))
+        self.right_keyframe_indices = np.asarray([all_images.index(n) for n in right_keyframes])
+
+        left_keyframes = sorted(os.listdir(f"{args_cli.data_dir}/{args_cli.seq_name}/left_kf_rgb"))
+        self.left_keyframe_indices = np.asarray([all_images.index(n) for n in left_keyframes])
+
+        self.switch_indices = getattr(self, f'{self.order[0]}_keyframe_indices')[-1]
+        print(f"start with {self.order[0]} side")
+        print(f"Switch to {self.order[1]} side after {self.switch_indices}-th waypoint")
 
 
     def transform_object_pose_cam_to_world(self, pose, offset):
@@ -562,13 +574,18 @@ class DemoReplay(object):
             if reached_r and reached_l:
                 init_robot_qpos_r = joint_pos_des_r[0, :].cpu().numpy()
                 init_robot_qpos_l = joint_pos_des_l[0, :].cpu().numpy()
-                init_robot_qpos = {}
-                init_robot_qpos.update(
-                    {k:v for (k, v) in zip(self.right_robot_joint_names, init_robot_qpos_r)}
+                init_robot_qpos_dict = {}
+                init_robot_qpos_dict.update(
+                    {k:v for (k, v) in zip(self.right_arm_joint_names, init_robot_qpos_r)}
                 )
-                init_robot_qpos.update(
-                    {k:v for (k, v) in zip(self.left_robot_joint_names, init_robot_qpos_l)}
+                init_robot_qpos_dict.update(
+                    {k:v for (k, v) in zip(self.left_arm_joint_names, init_robot_qpos_l)}
                 )
+
+
+                init_robot_qpos = self.robot.data.default_joint_pos.clone()[0, :]
+                init_robot_qpos[self.right_arm_joint_ids] = joint_pos_des_r[0, :]
+                init_robot_qpos[self.left_arm_joint_ids] = joint_pos_des_l[0, :]
                 success = True
             else:
                 self.robot.set_joint_position_target(
@@ -590,14 +607,15 @@ class DemoReplay(object):
                 self.scene.update(self.sim_dt)
             
         
-        return init_robot_qpos
+        return init_robot_qpos_dict, init_robot_qpos
                 
 
     def move_to_next_waypoint(
         self, 
         right_goal_ee_pose, left_goal_ee_pose,
         right_object_pose, left_object_pose,
-        right_hand_ref_qpos, left_hand_ref_qpos
+        right_hand_ref_qpos, left_hand_ref_qpos,
+        inactive_side='right'
     ):
         self.diff_ik_controller_r.reset()
         self.ik_commands_r[:] = right_goal_ee_pose
@@ -631,7 +649,8 @@ class DemoReplay(object):
             self.joint_pos[:, self.right_hand_joint_ids] = right_hand_ref_qpos
             self.joint_pos[:, self.left_hand_joint_ids] = left_hand_ref_qpos
             
-            if reached_r and reached_l:
+            reached = reached_l if inactive_side == 'right' else reached_r
+            if reached:
                 actions.append(self.robot.data.joint_pos[0, :].cpu().numpy())
                 success = True
             else:
@@ -640,13 +659,15 @@ class DemoReplay(object):
                     joint_ids=self.right_arm_joint_ids
                 )
                 self.robot.set_joint_position_target(
+                right_hand_qpos,
+                joint_ids=self.right_hand_joint_ids
+                )
+                    
+                self.robot.set_joint_position_target(
                     joint_pos_des_l, 
                     joint_ids=self.left_arm_joint_ids
                 )
-                self.robot.set_joint_position_target(
-                    right_hand_qpos,
-                    joint_ids=self.right_hand_joint_ids
-                )
+                
                 self.robot.set_joint_position_target(
                     left_hand_qpos,
                     joint_ids=self.left_hand_joint_ids
@@ -683,7 +704,7 @@ class DemoReplay(object):
             buffer['action_chunks'][f'chunk_{chunk_id}']['goal_object_pose.left'] = left_obj_pose
 
 
-        if len(buffer['action_chunks'].keys()) == 0: # create the first action chunk
+        if waypoint_idx == getattr(self, f'{self.order[0]}_keyframe_indices')[0]: # create the first action chunk for the init arm
             create_new_chunk(chunk_id=chunk_id, right_obj_pose=right_goal_object_pose, left_obj_pose=left_goal_object_pose)
         else:
             if not self.object_lifted: 
@@ -696,10 +717,14 @@ class DemoReplay(object):
                 else:
                     lifted = diff_r > self.move_thres_r or diff_l > self.move_thres_l
                 if lifted:
-                    chunk_id += 1
-                    self.object_lifted = True
-                    print(f"create {chunk_id} chunk, object lifted")
-                    create_new_chunk(chunk_id=chunk_id, right_obj_pose=right_goal_object_pose, left_obj_pose=left_goal_object_pose)
+                    if not self.lift_chunk_end: # a little hack to make sure the lift-up chunk covers all lift up action
+                        merge_current_chunk(chunk_id=chunk_id, right_obj_pose=right_goal_object_pose, left_obj_pose=left_goal_object_pose)
+                        self.lift_chunk_end = True
+                    else:
+                        chunk_id += 1
+                        self.object_lifted = True
+                        print(f"create {chunk_id} chunk, object lifted")
+                        create_new_chunk(chunk_id=chunk_id, right_obj_pose=right_goal_object_pose, left_obj_pose=left_goal_object_pose)
                 else:
                     merge_current_chunk(chunk_id=chunk_id, right_obj_pose=right_goal_object_pose, left_obj_pose=left_goal_object_pose)
             else:
@@ -710,7 +735,7 @@ class DemoReplay(object):
                     else: # current chunk does not have enough steps, merge with the next chunk
                         merge_current_chunk(chunk_id=chunk_id, right_obj_pose=right_goal_object_pose, left_obj_pose=left_goal_object_pose)
                 else: # use pre-selected keyframes
-                    if (waypoint_idx-1) in self.keyframe_indices:
+                    if (waypoint_idx-1) in self.keyframe_indices and (waypoint_idx-1) != getattr(self, f'{self.order[-1]}_keyframe_indices')[0]:
                         chunk_id += 1
                         print(f"create {chunk_id} chunk, keyframe reached")
                         create_new_chunk(chunk_id=chunk_id, right_obj_pose=right_goal_object_pose, left_obj_pose=left_goal_object_pose)
@@ -723,7 +748,8 @@ class DemoReplay(object):
     
     def replay(self):
         # Simulation loop
-        start_idx = 1
+        start_idx = 0
+        self.lift_chunk_end = False
         while simulation_app.is_running():
             chunk_id = 0
             trajectorys = {
@@ -743,20 +769,27 @@ class DemoReplay(object):
                 self.retarget_data['left']['ref_obj_pose'][start_idx, :],
                 offset=self.left_offset
             )
-            init_robot_qpos= self.move_to_initial_waypoint(
-                right_goal_ee_pose=self.retarget_data['right']['ref_ee_pose'][start_idx, :], 
-                left_goal_ee_pose=self.retarget_data['left']['ref_ee_pose'][start_idx, :],
+
+            # here we use the ee poses from first right & left keyframe to calculate the initial robot qpos
+            init_robot_qpos_dict, init_robot_qpos = self.move_to_initial_waypoint(
+                right_goal_ee_pose=self.retarget_data['right']['ref_ee_pose'][self.right_keyframe_indices[0], :], 
+                left_goal_ee_pose=self.retarget_data['left']['ref_ee_pose'][self.left_keyframe_indices[0], :],
                 right_object_pose=cur_goal_object_pose_rw, 
                 left_object_pose=cur_goal_object_pose_lw,
             )
 
-            trajectorys['init_robot_qpos'] = init_robot_qpos
+            trajectorys['init_robot_qpos'] = init_robot_qpos_dict
             trajectorys['init_object_pose.right'] = cur_goal_object_pose_rb
             trajectorys['init_object_pose.left'] = cur_goal_object_pose_lb
 
             print("Start replaying...")
-            for waypoint_idx in range(start_idx+1, self.num_waypoints):
-                print(waypoint_idx, self.switch_indices, self.keyframe_indices)
+            for waypoint_idx in range(start_idx, self.num_waypoints):
+                if waypoint_idx > getattr(self, f'{self.order[0]}_keyframe_indices')[-1] + 1 and \
+                    waypoint_idx < getattr(self, f'{self.order[1]}_keyframe_indices')[0]:
+                    print('skip: ', waypoint_idx, self.switch_indices, getattr(self, f"{self.order[0]}_keyframe_indices")[-1], getattr(self, f"{self.order[1]}_keyframe_indices")[0], self.keyframe_indices)
+                    continue
+                else:
+                    print('running: ', waypoint_idx, self.switch_indices, getattr(self, f"{self.order[0]}_keyframe_indices")[-1], getattr(self, f"{self.order[1]}_keyframe_indices")[0], self.keyframe_indices)
                 
                 cur_goal_object_pose_rw, cur_goal_object_pose_rb = self.transform_object_pose_cam_to_world(
                     self.retarget_data['right']['ref_obj_pose'][waypoint_idx, :],
@@ -775,22 +808,48 @@ class DemoReplay(object):
                     waypoint_idx=waypoint_idx
                 )
 
+                inactive_side = self.order[1] if waypoint_idx <= self.switch_indices+1 else self.order[0]
+                if inactive_side == 'right':
+                    right_goal_ee_pose=self.retarget_data['right']['ref_ee_pose'][self.right_keyframe_indices[0], :]
+                    right_object_pose=cur_goal_object_pose_rw
+                    right_hand_ref_qpos=self.retarget_data['right']['ref_hand_qpos'][self.right_keyframe_indices[0], :]
+
+                    left_goal_ee_pose=self.retarget_data['left']['ref_ee_pose'][waypoint_idx, :]
+                    left_object_pose=cur_goal_object_pose_lw
+                    left_hand_ref_qpos=self.retarget_data['left']['ref_hand_qpos'][waypoint_idx, :]
+                
+                else:
+                    right_goal_ee_pose=self.retarget_data['right']['ref_ee_pose'][waypoint_idx, :]
+                    right_object_pose=cur_goal_object_pose_rw
+                    right_hand_ref_qpos=self.retarget_data['right']['ref_hand_qpos'][waypoint_idx, :]
+
+                    left_goal_ee_pose=self.retarget_data['left']['ref_ee_pose'][self.left_keyframe_indices[0], :]
+                    left_object_pose=cur_goal_object_pose_lw
+                    left_hand_ref_qpos=self.retarget_data['left']['ref_hand_qpos'][self.left_keyframe_indices[0], :]
+                
+
                 actions = self.move_to_next_waypoint(
-                    right_goal_ee_pose=self.retarget_data['right']['ref_ee_pose'][waypoint_idx, :], 
-                    left_goal_ee_pose=self.retarget_data['left']['ref_ee_pose'][waypoint_idx, :],
-                    right_object_pose=cur_goal_object_pose_rw, 
-                    left_object_pose=cur_goal_object_pose_lw,
-                    right_hand_ref_qpos=self.retarget_data['right']['ref_hand_qpos'][waypoint_idx, :], 
-                    left_hand_ref_qpos=self.retarget_data['left']['ref_hand_qpos'][waypoint_idx, :], 
+                    right_goal_ee_pose=right_goal_ee_pose, 
+                    right_object_pose=right_object_pose, 
+                    right_hand_ref_qpos=right_hand_ref_qpos, 
+                    left_goal_ee_pose=left_goal_ee_pose,
+                    left_object_pose=left_object_pose,
+                    left_hand_ref_qpos=left_hand_ref_qpos, 
+                    inactive_side=self.order[1] if waypoint_idx < self.switch_indices else self.order[0]
                 )
             
                 trajectorys['action_chunks'][f'chunk_{chunk_id}']['qpos'].extend(actions)
+                
 
-                if waypoint_idx == (self.switch_indices+1):
+                if waypoint_idx == (self.switch_indices+1) and self.object_lifted == True:
                     print("refresh object lift state")
                     self.object_lifted = False # fresh state for another side
+                    self.lift_chunk_end = False
                     trajectorys['switch_idx'] = chunk_id
                     print("switch_idx: ", chunk_id)
+                print()
+            
+            
             
             if not self.repeat:
                 for key in trajectorys["action_chunks"].keys():
