@@ -243,7 +243,6 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
             "goal": sim_utils.UsdFileCfg(
                 usd_path=f"devel/assets/hammer_v2/hammer_handle.usd",
                 scale=(1., 1., 1.),
-                collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.7, 0.0, 0.0)),
             )
         },
@@ -255,7 +254,6 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
             "goal": sim_utils.UsdFileCfg(
                 usd_path=f"devel/assets/hammer_v2/hammer_head.usd",
                 scale=(1., 1., 1.),
-                collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.7, 0.0, 0.0)),
             )
         },

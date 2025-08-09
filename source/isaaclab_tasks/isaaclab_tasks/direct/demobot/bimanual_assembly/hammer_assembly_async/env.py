@@ -12,6 +12,7 @@ import torch.nn.functional as F
 import numpy as np
 import pickle
 import math
+import time
 from typing import Optional, Union
 
 import isaaclab.sim as sim_utils
@@ -265,6 +266,13 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_object_keypoint_cur = torch.zeros_like(self.left_object_keypoint_init, dtype=torch.float, device=self.device)
         self.left_object_keypoint_goal = torch.zeros_like(self.left_object_keypoint_init, dtype=torch.float, device=self.device)
 
+        if self.init_side == 'right':
+            object_height = (torch.max(self.right_object_keypoint_init[:, :, 2], dim=1).values - torch.min(self.right_object_keypoint_init[:, :, 2], dim=1).values) / 2
+            self.right_ref_targets[self.switch_idx:, 2] = self.table_height + object_height[0]
+        else:
+            object_height = (torch.max(self.left_object_keypoint_init[:, :, 2], dim=1).values - torch.min(self.left_object_keypoint_init[:, :, 2], dim=1).values) / 2
+            self.left_ref_targets[self.switch_idx-1:, 2] = self.table_height + object_height[0]
+
 
         ###################
         # state indicators
@@ -286,6 +294,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_goal_not_reached = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         self.goal_not_sync_reached = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
 
+        self.object_not_stable_placed = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+
 
         """ Indicators for current state
         
@@ -294,8 +304,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         # default value
         # 0 - left
         # 1 - right
-        self.last_operation_side = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self.cur_operation_side = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.last_active_side = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.cur_active_side = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         self.right_object_reached = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         self.left_object_reached = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
@@ -337,7 +347,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         # counters
         ###################
         self.lift_episode_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        self.goal_reach_episode_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.right_goal_reach_episode_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.left_goal_reach_episode_counter = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         self.step_to_lift_right = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self.step_to_lift_left = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -356,20 +367,18 @@ class HammerAssemblyEnv(DirectRLEnv):
         #######################
         # threshold parameters
         #######################
-        self.lift_sync_window_size = 50
-        self.goal_sync_window_size = 75
         self.right_object_lift_thresh = 0.003 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-        self.right_object_pos_tolerance = 0.04 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        self.right_object_pos_tolerance = 0.05 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         self.right_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
         self.right_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         
         self.left_object_lift_thresh = 0.003 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-        self.left_object_pos_tolerance = 0.04 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+        self.left_object_pos_tolerance = 0.05 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
         self.left_object_rot_tolerance = 99.0 #@TODO start with pos tolerance only
         self.left_finger_dist_tolerance = 0.15 * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
 
         self.pos_tolerance_curriculum_step = 100 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 50
-        self.pos_tolerance_reduce = 0.002 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 0.005
+        self.pos_tolerance_reduce = 0.0025 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 0.005
         self.reset_to_last_success_ratio = getattr(self.cfg, "reset_to_last_success_ratio", 0.0)
         print("reset_to_last_success_ratio: ", self.reset_to_last_success_ratio)
 
@@ -385,9 +394,10 @@ class HammerAssemblyEnv(DirectRLEnv):
             "consecutive_successes": None,
             "lift_thresh": None,
             "lift_episode_counter": None,
-            "goal_reach_thresh": None,
-            "goal_reach_episode_counter": None,
             "reward_stage_indicator": None,
+            "switch_bonus": None,
+            "stable_placement_bonus": None,
+            "completion_bonus": None,
         }
         
         if self.use_left_side_reward:
@@ -404,7 +414,9 @@ class HammerAssemblyEnv(DirectRLEnv):
                     "left_object_reached_bonus": None,
                     "left_lift_bonus": None,
                     "left_goal_reached_bonus": None,
-                    "left_move_penalty": None,
+                    "left_goal_reached_speed_penalty": None,
+                    "left_goal_reach_thresh": None,
+                    "left_goal_reach_episode_counter": None,
                 }
             )
         
@@ -422,18 +434,12 @@ class HammerAssemblyEnv(DirectRLEnv):
                     "right_object_reached_bonus": None,
                     "right_lift_bonus": None,
                     "right_goal_reached_bonus": None,
-                    "right_move_penalty": None,
+                    "right_goal_reached_speed_penalty": None,
+                    "right_goal_reach_thresh": None,
+                    "right_goal_reach_episode_counter": None,
                 }
             )
         
-        if self.use_left_side_reward and self.use_right_side_reward:
-            self.extras["log"].update(
-                {
-                    "sync_reach_bonus": None,
-                    "sync_lift_bonus": None,
-                    "sync_goal_bonus": None,
-                }
-            )
         
         #########################################
         # setting up debug visualizers if needed
@@ -472,6 +478,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         right_side_init_ids = -1
         left_side_init_ids = -1
         
+        print(f"{len(chunk_ids)} chunks in total")
         for i in range(len(chunk_ids)):
             ref_actions[i, :, :] = torch.tensor(action_buffer[chunk_ids[i]]['qpos'][-1, :], dtype=torch.float, device=self.device)
             ref_actions[i, :action_buffer[chunk_ids[i]]['qpos'].shape[0], :] = torch.tensor(action_buffer[chunk_ids[i]]['qpos'], dtype=torch.float, device=self.device)
@@ -489,14 +496,14 @@ class HammerAssemblyEnv(DirectRLEnv):
 
                 if right_moved:
                     print("start with right side")
-                    self.cur_operation_side = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+                    self.cur_active_side = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
                     right_side_init_ids = 0
                     self.init_side = 'right'
                     self.right_init_id = 0
 
                 if left_moved:
                     print("start with left side")
-                    self.cur_operation_side = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+                    self.cur_active_side = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
                     left_side_init_ids = 0
                     self.init_side = 'left'
                     self.left_init_id = 0
@@ -581,13 +588,14 @@ class HammerAssemblyEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
         # add table
+        self.table_height = 0.11
         table_cfg = sim_utils.UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/SeattleLabTable/table_instanceable.usd", scale=(1.5, 1.5, 1.5)
         )
         table_cfg.func("/World/envs/env_.*/Table", table_cfg, translation=(0.6, 0, 0), orientation=(0.7071068, 0, 0, 0.7071068))
 
         operate_space_cfg = sim_utils.CuboidCfg(
-                    size=(0.75, 1, 0.11),
+                    size=(0.75, 1, self.table_height),
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.75, 0.75, 0.75), metallic=0.2),
                     mass_props=sim_utils.MassPropertiesCfg(mass=10.0),
                     collision_props=sim_utils.CollisionPropertiesCfg(),
@@ -597,7 +605,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         )
 
         fake_operate_space_cfg = sim_utils.CuboidCfg(
-                    size=(0.75, 1, 0.11),
+                    size=(0.75, 1, self.table_height),
                     visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.75, 0.75, 0.75), metallic=0.2),
                     mass_props=sim_utils.MassPropertiesCfg(mass=10.0),
                     collision_props=sim_utils.CollisionPropertiesCfg(),
@@ -650,7 +658,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         def _compute_one_side(qpos, ref_actions, pred_actions, indices):
             out = qpos.clone()
             out[:, indices] = ref_actions[:, indices] + \
-                                                    self.robot_dof_speed_scales[:, indices] * self.dt * pred_actions[:, indices] * self.cfg.action_scale
+                                self.robot_dof_speed_scales[:, indices] * self.dt * pred_actions[:, indices] * self.cfg.action_scale
             
             return out
         
@@ -660,10 +668,25 @@ class HammerAssemblyEnv(DirectRLEnv):
             right_side_qpos = _compute_one_side(out, ref_actions, pred_actions, indices=self.right_joint_indices)
             left_side_qpos = _compute_one_side(out, ref_actions, pred_actions, indices=self.left_joint_indices)
             # print(out.shape, right_side_qpos.shape, left_side_qpos.shape)
-            # print(self.cur_operation_side)
+            # print(self.cur_active_side)
 
-            out[self.cur_operation_side == 0, :] = left_side_qpos[self.cur_operation_side == 0, :]
-            out[self.cur_operation_side == 1, :] = right_side_qpos[self.cur_operation_side == 1, :]
+            # out[self.cur_active_side == 0, :] = left_side_qpos[self.cur_active_side == 0, :]
+            # out[self.cur_active_side == 1, :] = right_side_qpos[self.cur_active_side == 1, :]
+            
+            out = torch.where(
+                (self.cur_active_side).unsqueeze(-1).repeat(1, self.num_robot_dofs) == 0,
+                left_side_qpos,
+                right_side_qpos
+            )
+
+
+            # print("actions")
+            # print(out[self.cur_active_side == 0])
+            # print(left_side_qpos[self.cur_active_side == 0])
+            # print("="*50)
+            # print(out[self.cur_active_side == 1])
+            # print(left_side_qpos[self.cur_active_side == 1])
+            # print()
 
         else:
             out = pred_actions.clone()
@@ -672,8 +695,10 @@ class HammerAssemblyEnv(DirectRLEnv):
         out_fix_hand = out.clone()
         out_fix_hand[:, self.hand_joint_indices] = self.robot.data.default_joint_pos[:, self.hand_joint_indices]
 
+        
+
         object_reached = torch.where(
-            self.cur_operation_side == 0,
+            self.cur_active_side == 0,
             ~self.left_object_not_reached,
             ~self.right_object_not_reached
         )
@@ -931,9 +956,9 @@ class HammerAssemblyEnv(DirectRLEnv):
             return object_pos, object_rot, object_velocities, object_linvel, object_angvel
 
 
-        def _compute_sync_state(right_state, left_state, cur_operation_side):
+        def _compute_sync_state(right_state, left_state, cur_active_side):
             state = torch.where(
-                cur_operation_side==0,
+                cur_active_side==0,
                 left_state,
                 right_state
             )
@@ -942,7 +967,7 @@ class HammerAssemblyEnv(DirectRLEnv):
 
         # stage encoding
         self.successes_onehot = F.one_hot(self.successes.clone().long(), num_classes=self.max_consecutive_success+1)
-        self.cur_operation_side_onehot = F.one_hot(self.cur_operation_side.clone().long(), num_classes=2)
+        self.cur_active_side_onehot = F.one_hot(self.cur_active_side.clone().long(), num_classes=2)
         
         # data for robot
         self.robot_dof_pos = self.robot.data.joint_pos.clone()
@@ -1060,18 +1085,18 @@ class HammerAssemblyEnv(DirectRLEnv):
         # 2. successes > 0, object already lifted to the first goal, use a relaxed condition to allow more in-hand adjustment
         self.right_object_reached = torch.where(
             self.successes == self.right_init_id,
-            (self.right_ee2o_dist < 0.04) & (self.right_ee_pos[:, 2] - self.right_object_pos[:, 2] <= 0.02),
+            (self.right_ee2o_dist < 0.04) & (self.right_ee_pos[:, 2] - self.right_object_pos[:, 2] <= 0.03),
             (self.right_ee2o_dist < 0.07)
         )
         self.left_object_reached = torch.where(
             self.successes == self.left_init_id,
-            (self.left_ee2o_dist < 0.04) & (self.left_ee_pos[:, 2] - self.left_object_pos[:, 2] <= 0.02),
+            (self.left_ee2o_dist < 0.04) & (self.left_ee_pos[:, 2] - self.left_object_pos[:, 2] <= 0.03),
             (self.left_ee2o_dist < 0.07)
         )
         self.object_sync_reached = _compute_sync_state(
             right_state=self.right_object_reached, 
             left_state=self.left_object_reached, 
-            cur_operation_side=self.cur_operation_side
+            cur_active_side=self.cur_active_side
         )
 
         # update reward_stage_indicator for reaching stage
@@ -1087,11 +1112,12 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.object_sync_lifted = _compute_sync_state(
             right_state=self.right_object_lifted,
             left_state=self.left_object_lifted,
-            cur_operation_side=self.cur_operation_side
+            cur_active_side=self.cur_active_side
         )
         # update reward_stage_indicator for lifting stage
         self.reward_stage_indicator = torch.where(
-            (self.object_sync_reached & self.object_sync_lifted) | (self.successes > 0),
+            (self.object_sync_reached & self.object_sync_lifted) | \
+                ((self.successes > 0) & (self.successes != self.switch_idx)),
             2.0,
             self.reward_stage_indicator
         )
@@ -1099,11 +1125,35 @@ class HammerAssemblyEnv(DirectRLEnv):
         # compute goaling stage
         self.right_goal_reached = self.right_goal_dist < self.right_object_pos_tolerance
         self.left_goal_reached = self.left_goal_dist < self.left_object_pos_tolerance
+        
+        self.right_goal_reached_speed_penalty = torch.where(
+            self.right_goal_dist < (self.right_object_pos_tolerance + 0.01),
+            2 * torch.norm(self.left_object_vel, dim=-1, p=2),
+            0.0
+        )
+        self.left_goal_reached_speed_penalty = torch.where(
+            self.left_goal_dist < (self.left_object_pos_tolerance + 0.01),
+            2 * torch.norm(self.left_object_vel, dim=-1, p=2),
+            0.0
+        )
+
         self.goal_sync_reached = _compute_sync_state(
             right_state=self.right_goal_reached,
             left_state=self.left_goal_reached,
-            cur_operation_side=self.cur_operation_side
+            cur_active_side=self.cur_active_side
         )
+        if self.init_side == 'left':
+            self.object_stable_placed = torch.where(
+                self.successes > self.switch_idx,
+                self.left_goal_reached,
+                torch.tensor(False)
+            )
+        else:
+            self.object_stable_placed = torch.where(
+                self.successes > self.switch_idx,
+                self.right_goal_reached,
+                torch.tensor(False)
+            )
 
         # update reward_stage_indicator for goaling stage
         self.reward_stage_indicator = torch.where(
@@ -1113,9 +1163,25 @@ class HammerAssemblyEnv(DirectRLEnv):
         )
 
         # compute penalty items
-        self.action_penalty = torch.norm(self.pred_actions, p=2, dim=-1)
-        self.right_moving_penalty = self.right_goal_dist + torch.norm(self.right_object_vel, dim=-1, p=2)
-        self.left_moving_penalty = self.left_goal_dist + torch.norm(self.left_object_vel, dim=-1, p=2)
+        self.action_penalty = torch.where(
+            self.cur_active_side == 0, # if left side is activated
+            1.0 * torch.norm(self.pred_actions[:, self.right_joint_indices], p=2, dim=-1) + 0.01* torch.norm(self.pred_actions[:, self.left_joint_indices], p=2, dim=-1),
+            1.0 * torch.norm(self.pred_actions[:, self.left_joint_indices], p=2, dim=-1) + 0.01* torch.norm(self.pred_actions[:, self.right_joint_indices], p=2, dim=-1)
+        )
+
+        if self.init_side == 'left':
+            self.moving_penalty = torch.where(
+                self.successes >= self.switch_idx,
+                5 * (self.left_goal_dist + torch.norm(self.left_object_vel, dim=-1, p=2)),
+                0.0
+            )
+        else:
+            self.moving_penalty = torch.where(
+                self.successes >= self.switch_idx,
+                5 * (self.right_goal_dist + torch.norm(self.right_object_vel, dim=-1, p=2)),
+                0.0
+            )
+
 
         # print("*"*100)
         # print(self.reward_stage_indicator)
@@ -1177,6 +1243,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         obs = [
             # stage condition
             self.successes_onehot,
+            # current active side
+            self.cur_active_side_onehot,
             # last predicted action residual 
             self.pred_actions,
 
@@ -1235,6 +1303,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         states = [
             # stage condition
             self.successes_onehot,
+            # current active side
+            self.cur_active_side_onehot,
             # last predicted action residual 
             self.pred_actions,
         ]
@@ -1349,78 +1419,73 @@ class HammerAssemblyEnv(DirectRLEnv):
 
         # reaching
         self.right_object_not_reached = torch.where(
-            self.right_object_reached,
+            self.right_object_reached & (self.cur_active_side == 1),
             torch.tensor(False),
             self.right_object_not_reached
         )
 
         self.left_object_not_reached = torch.where(
-            self.left_object_reached,
+            self.left_object_reached & (self.cur_active_side == 0),
             torch.tensor(False),
             self.left_object_not_reached
         )
 
-        self.object_not_sync_reached = torch.where(
-            self.object_sync_reached,
-            torch.tensor(False),
-            self.object_not_sync_reached
-        )
-
         # lifting
         self.right_object_not_lifted = torch.where(
-            self.right_object_lifted,
+            self.right_object_lifted & (self.cur_active_side == 1),
             torch.tensor(False),
             self.right_object_not_lifted
         )
 
         self.left_object_not_lifted = torch.where(
-            self.left_object_lifted,
+            self.left_object_lifted & (self.cur_active_side == 0),
             torch.tensor(False),
             self.left_object_not_lifted
         )
 
-        self.object_not_sync_lifted = torch.where(
-            self.object_sync_lifted,
-            torch.tensor(False),
-            self.object_not_sync_lifted
-        )
-
         # goaling
         self.right_goal_not_reached = torch.where(
-            self.right_goal_reached,
+            self.right_goal_reached & (self.cur_active_side == 1),
             torch.tensor(False),
             self.right_goal_not_reached
         )
 
         self.left_goal_not_reached = torch.where(
-            self.left_goal_reached,
+            self.left_goal_reached & (self.cur_active_side == 0),
             torch.tensor(False),
             self.left_goal_not_reached
+        )
+
+        # placing
+        self.object_not_stable_placed = torch.where(
+            self.object_stable_placed & (self.successes > self.switch_idx),
+            torch.tensor(False),
+            self.object_not_stable_placed
         )
 
         #################
         # update counter
         #################
         self.step_to_lift_right = torch.where(
-            self.right_object_lifted,
+            self.right_object_lifted & (self.cur_active_side == 1),
             self.episode_length_buf,
             self.step_to_lift_right
         )
 
         self.step_to_lift_left = torch.where(
-            self.left_object_lifted,
+            self.left_object_lifted & (self.cur_active_side == 0),
             self.episode_length_buf,
             self.step_to_lift_left
         )
 
         self.step_to_goal_right = torch.where(
-            self.right_goal_reached,
+            self.right_goal_reached & (self.cur_active_side == 1),
             self.episode_length_buf,
             self.step_to_goal_right
         )
 
         self.step_to_goal_left = torch.where(
-            self.left_goal_reached,
+            self.left_goal_reached & (self.cur_active_side == 0),
             self.episode_length_buf,
             self.step_to_goal_left
         )
@@ -1432,6 +1497,8 @@ class HammerAssemblyEnv(DirectRLEnv):
             total_reward,
             self.reset_goal_buf,
             self.successes,
+            # reset_goal_buf,
+            # successes,
             log_dict,
         ) = compute_rewards_async(
             reset_goal_buf=self.reset_goal_buf,
@@ -1450,10 +1517,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             left_object_reached=self.left_object_reached,
             left_object_lifted=self.left_object_lifted,
             left_goal_reached=self.left_goal_reached,
-            # sync states
-            object_sync_reached=self.object_sync_reached,
-            object_sync_lifted=self.object_sync_lifted,
-            goal_sync_reached=self.goal_sync_reached,
+            object_stable_placed=self.object_stable_placed,
             # sparse bonus indicator
             right_object_not_reached=self.right_object_not_reached,
             right_object_not_lifted=self.right_object_not_lifted,
@@ -1461,17 +1525,16 @@ class HammerAssemblyEnv(DirectRLEnv):
             left_object_not_reached=self.left_object_not_reached,
             left_object_not_lifted=self.left_object_not_lifted,
             left_goal_not_reached=self.left_goal_not_reached,
-            object_not_sync_reached=self.object_not_sync_reached,
-            object_not_sync_lifted=self.object_not_sync_lifted,
+            object_not_stable_placed=self.object_not_stable_placed,
             # penalty
             action_penalty=self.action_penalty,
-            right_moving_penalty=self.right_moving_penalty,
-            left_moving_penalty=self.left_moving_penalty,
+            moving_penalty=self.moving_penalty,
+            right_goal_reached_speed_penalty=self.right_goal_reached_speed_penalty,
+            left_goal_reached_speed_penalty=self.left_goal_reached_speed_penalty,
             # which side rewards to be used
-            use_right_side_reward=self.use_right_side_reward,
-            use_left_side_reward=self.use_left_side_reward,
-            cur_operation_side=self.cur_operation_side,
-            switch_point=self.switch_idx
+            cur_active_side=self.cur_active_side,
+            switch_point=self.switch_idx,
+            max_consecutive_success=self.max_consecutive_success
         )
         
         if self.debug:
@@ -1498,15 +1561,21 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.extras["log"]["consecutive_successes"] = self.successes.clone().detach()
         self.extras["log"]["lift_thresh"] = self.right_object_lift_thresh.mean().clone().detach()
         self.extras["log"]["lift_episode_counter"] = self.lift_episode_counter.mean().clone().detach()
-        self.extras["log"]["goal_reach_thresh"] = self.right_object_pos_tolerance.mean().clone().detach()
-        self.extras["log"]["goal_reach_episode_counter"] = self.goal_reach_episode_counter.mean().clone().detach()
         self.extras["log"]["reward_stage_indicator"] = self.reward_stage_indicator.mean().clone().detach()
+        self.extras["log"]["switch_bonus"] = log_dict["switch_bonus"].clone().detach()
+        self.extras["log"]["stable_placement_bonus"] = log_dict["stable_placement_bonus"].clone().detach()
+        self.extras["log"]["completion_bonus"] = log_dict["completion_bonus"]
+
+        self.extras["log"]["right_goal_reach_thresh"] = self.right_object_pos_tolerance.mean().clone().detach()
+        self.extras["log"]["right_goal_reach_episode_counter"] = self.right_goal_reach_episode_counter.mean().clone().detach()
+        self.extras["log"]["left_goal_reach_thresh"] = self.left_object_pos_tolerance.mean().clone().detach()
+        self.extras["log"]["left_goal_reach_episode_counter"] = self.left_goal_reach_episode_counter.mean().clone().detach()
 
         self.extras["log"]["step_to_lift_left"] = self.step_to_lift_left.mean().clone().detach()
         self.extras["log"]["step_to_goal_left"] = self.step_to_goal_left.mean().clone().detach()
         self.extras["log"]["step_to_goal_right"] = self.step_to_goal_right.mean().clone().detach()
         self.extras["log"]["step_to_lift_right"] = self.step_to_lift_right.mean().clone().detach()
-
+        
 
         # keep tracking of the max consecutive successes for each eval envs
         self.eval_consecutive_successes = torch.maximum(self.successes, self.eval_consecutive_successes)
@@ -1521,8 +1590,10 @@ class HammerAssemblyEnv(DirectRLEnv):
             if self.use_right_side_reward and 'right' in k:
                 self.extras["log"][k] = log_dict[k].clone().detach()
             
-            if self.use_right_side_reward and self.use_left_side_reward and 'sync' in k:
-                self.extras["log"][k] = log_dict[k].clone().detach()
+        
+        for k in self.extras["log"].keys():
+            if self.extras["log"][k] is None:
+                print(k, " is None in log!")
 
         # reset goals if the goal has been reached
         # self.reset_goal_buf = (self.ref_chunk_step_idx[:, 1] >= self.ref_chunk_max_steps[self.ref_chunk_step_idx[:, 0]]) #NOTE test only
@@ -1535,6 +1606,33 @@ class HammerAssemblyEnv(DirectRLEnv):
         return total_reward
 
 
+    # def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+    #     # termination condition: 
+    #     #   |-- the object falls off the table
+    #     #   |-- the object dropped after being lifted
+    #     #   |-- we reached the last sub-goal
+    #     fall_terminated = (self.right_object_pos[:, 2] < 0.1) | (self.left_object_pos[:, 2] < 0.1)
+    #     # drop_terminated = (~self.right_object_lifted | ~self.left_object_lifted) & (self.successes > 1)
+
+    #     # drop_terminated = torch.where(
+    #     #     self.cur_active_side == 0,
+    #     #     ~self.left_object_lifted & (self.successes > self.left_init_id+1),
+    #     #     ~self.right_object_lifted & (self.successes > self.right_init_id+1),
+    #     # )
+        
+    #     succeed_terminated = self.successes >= self.max_consecutive_success
+
+    #     # all timeout: the current action chunk reaches to its end but not reached goal yet
+    #     all_timeout = (self.reward_stage_indicator < 3) & (self.ref_chunk_step_idx[:, 1] >= self.ref_chunk_max_steps[self.ref_chunk_step_idx[:, 0]])
+
+    #     bad_placement_terminated = (self.successes == self.switch_idx) & (~getattr(self, f'{self.init_side}_goal_reached'))
+    #     truncated = all_timeout  & (~bad_placement_terminated)
+
+
+    #     return fall_terminated | bad_placement_terminated, succeed_terminated, truncated
+    
+
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         # termination condition: 
@@ -1542,20 +1640,12 @@ class HammerAssemblyEnv(DirectRLEnv):
         #   |-- the object dropped after being lifted
         #   |-- we reached the last sub-goal
         fall_terminated = (self.right_object_pos[:, 2] < 0.1) | (self.left_object_pos[:, 2] < 0.1)
-        # drop_terminated = (~self.right_object_lifted | ~self.left_object_lifted) & (self.successes > 1)
-
-        # drop_terminated = torch.where(
-        #     self.cur_operation_side == 0,
-        #     ~self.left_object_lifted & (self.successes > self.left_init_id+1),
-        #     ~self.right_object_lifted & (self.successes > self.right_init_id+1),
-        # )
         
         succeed_terminated = self.successes >= self.max_consecutive_success
 
-        # truncated condition: the current action chunk reaches to its end but not reached goal yet
+        # all timeout: the current action chunk reaches to its end but not reached goal yet
         truncated = (self.reward_stage_indicator < 3) & (self.ref_chunk_step_idx[:, 1] >= self.ref_chunk_max_steps[self.ref_chunk_step_idx[:, 0]])
 
-            
         return fall_terminated, succeed_terminated, truncated
 
 
@@ -1615,7 +1705,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         super()._reset_idx(env_ids)
         
         self.lift_episode_counter[env_ids] = torch.where(
-            ~self.object_sync_lifted[env_ids],
+            self.object_sync_lifted[env_ids],
             self.lift_episode_counter[env_ids] + 1,
             self.lift_episode_counter[env_ids]
         )
@@ -1636,9 +1726,9 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.eval_consecutive_successes[eval_env_ids] = 0.0
         self.reset_goal_buf[env_ids] = 0
         if self.init_side == 'right':
-            self.cur_operation_side[env_ids] = torch.tensor(True)
+            self.cur_active_side[env_ids] = True
         elif self.init_side == 'left':
-            self.cur_operation_side[env_ids] = torch.tensor(False)
+            self.cur_active_side[env_ids] = False
 
         # sparse bonus indicator
         self.right_object_not_reached[env_ids] = torch.tensor(True)
@@ -1651,6 +1741,8 @@ class HammerAssemblyEnv(DirectRLEnv):
 
         self.right_goal_not_reached[env_ids] = torch.tensor(True)
         self.left_goal_not_reached[env_ids] = torch.tensor(True)
+
+        self.object_not_stable_placed[env_ids] = torch.tensor(True)
 
 
         self.step_to_lift_right[env_ids] = 0
@@ -1718,22 +1810,108 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_goal_rot[env_ids] = self.left_ref_targets[self.ref_chunk_step_idx[env_ids, 0], 3:7]
         self.left_goal_pos[env_ids] = self.left_ref_targets[self.ref_chunk_step_idx[env_ids, 0], :3]
 
+        self.cur_active_side[env_ids] = self.last_active_side[env_ids]
+
         # set the state
         self.scene.reset_to(state, env_ids, is_relative=is_relative)
         
+    # def _reset_envs(
+    #     self,
+    #     terminate: torch.Tensor,
+    #     truncated: torch.Tensor,
+    # ):
+    #     """
+    #     Resets environments based on termination, timeout, or max success conditions.
+
+    #     This method creates a clean partition of environments to be reset:
+    #     1.  A small subset of training environments that timed out but had prior success
+    #         may be reset to their last successful state.
+    #     2.  All other environments that need a reset (due to termination, max success,
+    #         or timeout) are reset to their initial state.
+    #     """
+    #     # Determine the complete set of environments that need any form of reset
+    #     all_reset_mask = terminate | truncated
+    #     all_reset_ids = all_reset_mask.nonzero(as_tuple=False).squeeze(-1)
+
+    #     # If no environments need resetting, return early.
+    #     if all_reset_ids.numel() == 0:
+    #         return
+
+    #     # --- Partitioning Logic ---
+
+    #     # 1. Identify candidates to be reset to their LAST successful state.
+    #     # These are training envs that timed out, had prior success, and did NOT terminate or reach max success.
+    #     # This is the most specific category, so we identify it first.
+    #     reset_to_last_succ_candidate_mask = (
+    #         truncated &                               # Timed out without reaching goal
+    #         ~self.eval_env_mask &                     # Is a training environment
+    #         (self.successes > 0) &                    # Has had at least one success
+    #         ~terminate                                # Did NOT terminate (e.g., fall off table)
+    #     )
+        
+    #     last_succ_candidate_ids = reset_to_last_succ_candidate_mask.nonzero(as_tuple=False).squeeze(-1)
+
+    #     # From the candidates, sample a portion based on the configured ratio
+    #     final_last_succ_ids = torch.tensor([], dtype=torch.long, device=self.device)
+    #     if last_succ_candidate_ids.numel() > 0:
+    #         num_to_sample = int(math.ceil(last_succ_candidate_ids.numel() * self.reset_to_last_success_ratio))
+    #         if num_to_sample > 0:
+    #             perm = torch.randperm(last_succ_candidate_ids.numel(), device=self.device)
+    #             final_last_succ_ids = last_succ_candidate_ids[perm[:num_to_sample]]
+
+    #     # 2. All other environments needing a reset go to the INITIAL state.
+    #     # We create a mask for the final "last success" envs to easily exclude them
+    #     # from the set of envs to be reset to their initial state.
+    #     final_last_succ_mask = torch.zeros_like(all_reset_mask)
+    #     if final_last_succ_ids.numel() > 0:
+    #         final_last_succ_mask[final_last_succ_ids] = True
+
+    #     reset_to_init_mask = all_reset_mask & ~final_last_succ_mask
+    #     final_init_ids = reset_to_init_mask.nonzero(as_tuple=False).squeeze(-1)
+        
+    #     # --- Perform Resets ---
+    #     # make sure reset is performed for all needed envs
+    #     assert all_reset_ids.numel() == (final_init_ids.numel() + final_last_succ_ids.numel())
+
+    #     if final_init_ids.numel() > 0:
+    #         # print(f"Resetting {final_init_ids.numel()} env(s) to initial state.")
+    #         self._reset_idx(final_init_ids)
+
+    #     if final_last_succ_ids.numel() > 0:
+    #         # print(f"Resetting {final_last_succ_ids.numel()} env(s) to last successful state.")
+    #         self._reset_to(
+    #             self.last_success_state,
+    #             final_last_succ_ids,
+    #             seed=None,
+    #             is_relative=False
+    #         )
+        
+    #     # update articulation kinematics
+    #     self.scene.write_data_to_sim()
+    #     self.sim.forward()
+
+    #     # if sensors are added to the scene, make sure we render to reflect changes in reset
+    #     if self.sim.has_rtx_sensors() and self.cfg.rerender_on_reset:
+    #         self.sim.render()
+
+    #     self._compute_intermediate_values()
+
+
+
     def _reset_envs(
         self,
         terminate: torch.Tensor,
         truncated: torch.Tensor,
     ):
         """
-        Resets environments based on termination, timeout, or max success conditions.
+        Resets environments with a specialized curriculum for the task switch.
 
         This method creates a clean partition of environments to be reset:
-        1.  A small subset of training environments that timed out but had prior success
-            may be reset to their last successful state.
-        2.  All other environments that need a reset (due to termination, max success,
-            or timeout) are reset to their initial state.
+        1.  (NEW) Envs that fail immediately after switching tasks are ALWAYS reset
+            to their last successful state to enforce practice on the switch.
+        2.  A small subset of other training environments that timed out but had prior success
+            may be reset to their last successful state based on a probability ratio.
+        3.  All other environments that need a reset are reset to their initial state.
         """
         # Determine the complete set of environments that need any form of reset
         all_reset_mask = terminate | truncated
@@ -1743,48 +1921,58 @@ class HammerAssemblyEnv(DirectRLEnv):
         if all_reset_ids.numel() == 0:
             return
 
-        # --- Partitioning Logic ---
+        # --- NEW Partitioning Logic with a Mandatory Curriculum ---
 
-        # 1. Identify candidates to be reset to their LAST successful state.
-        # These are training envs that timed out, had prior success, and did NOT terminate or reach max success.
-        # This is the most specific category, so we identify it first.
-        reset_to_last_succ_candidate_mask = (
+        ## NEW ##: Identify envs that failed right AT the switch point. These get a mandatory reset-to-success.
+        # Condition: The env is resetting AND its success count is exactly the switch point.
+        # We also exclude evaluation environments from this specific curriculum.
+        reset_at_switch_mask = all_reset_mask & (self.successes == self.switch_idx) & (~self.eval_env_mask) & (~terminate)
+        final_switch_reset_ids = reset_at_switch_mask.nonzero(as_tuple=False).squeeze(-1)
+
+        ## NEW ##: Identify candidates for the ORIGINAL probabilistic reset-to-success.
+        # This is the same logic as before...
+        probabilistic_candidate_mask = (
             truncated &                               # Timed out without reaching goal
             ~self.eval_env_mask &                     # Is a training environment
             (self.successes > 0) &                    # Has had at least one success
             ~terminate                                # Did NOT terminate (e.g., fall off table)
         )
-        
-        last_succ_candidate_ids = reset_to_last_succ_candidate_mask.nonzero(as_tuple=False).squeeze(-1)
+        ## NEW ##: ...BUT, we must exclude the envs that are already being reset by our mandatory rule.
+        probabilistic_candidate_mask = probabilistic_candidate_mask & ~reset_at_switch_mask
+        probabilistic_candidate_ids = probabilistic_candidate_mask.nonzero(as_tuple=False).squeeze(-1)
 
-        # From the candidates, sample a portion based on the configured ratio
-        final_last_succ_ids = torch.tensor([], dtype=torch.long, device=self.device)
-        if last_succ_candidate_ids.numel() > 0:
-            num_to_sample = int(math.ceil(last_succ_candidate_ids.numel() * self.reset_to_last_success_ratio))
+        # Sample a portion of the probabilistic candidates based on the configured ratio
+        final_probabilistic_reset_ids = torch.tensor([], dtype=torch.long, device=self.device)
+        if probabilistic_candidate_ids.numel() > 0:
+            num_to_sample = int(math.ceil(probabilistic_candidate_ids.numel() * self.reset_to_last_success_ratio))
             if num_to_sample > 0:
-                perm = torch.randperm(last_succ_candidate_ids.numel(), device=self.device)
-                final_last_succ_ids = last_succ_candidate_ids[perm[:num_to_sample]]
+                perm = torch.randperm(probabilistic_candidate_ids.numel(), device=self.device)
+                final_probabilistic_reset_ids = probabilistic_candidate_ids[perm[:num_to_sample]]
+                
+        ## NEW ##: Combine both groups (mandatory and probabilistic) that will be reset to last success.
+        # torch.unique is used to be safe, although the sets should already be disjoint.
+        final_last_succ_ids = torch.unique(torch.cat([final_switch_reset_ids, final_probabilistic_reset_ids]))
 
-        # 2. All other environments needing a reset go to the INITIAL state.
-        # We create a mask for the final "last success" envs to easily exclude them
-        # from the set of envs to be reset to their initial state.
+        ## NEW ##: All other resetting environments will be reset to the initial state.
+        # We create a mask for all "last success" envs to easily exclude them.
         final_last_succ_mask = torch.zeros_like(all_reset_mask)
         if final_last_succ_ids.numel() > 0:
             final_last_succ_mask[final_last_succ_ids] = True
-
+        
         reset_to_init_mask = all_reset_mask & ~final_last_succ_mask
         final_init_ids = reset_to_init_mask.nonzero(as_tuple=False).squeeze(-1)
         
         # --- Perform Resets ---
-        # make sure reset is performed for all needed envs
+        # Sanity check: our partitioning should cover all resetting envs exactly once.
         assert all_reset_ids.numel() == (final_init_ids.numel() + final_last_succ_ids.numel())
 
         if final_init_ids.numel() > 0:
-            # print(f"Resetting {final_init_ids.numel()} env(s) to initial state.")
             self._reset_idx(final_init_ids)
 
         if final_last_succ_ids.numel() > 0:
-            # print(f"Resetting {final_last_succ_ids.numel()} env(s) to last successful state.")
+            # Note: This relies on `last_success_state` being correctly updated when the
+            # agent completes the first side's task, which your `_reset_target_pose` and
+            # `update_last_success_state` functions already handle.
             self._reset_to(
                 self.last_success_state,
                 final_last_succ_ids,
@@ -1914,39 +2102,41 @@ class HammerAssemblyEnv(DirectRLEnv):
         # Update the content of last success state buffer for the envs 
         # that reached new success
         self.update_last_success_state(env_ids=env_ids)
-        
-        self.last_operation_side[env_ids] = self.cur_operation_side[env_ids].clone()
 
         # @TODO
         # reset the cur operation side
         switch_env_ids = env_ids[self.successes[env_ids] == self.switch_idx]
         if len(switch_env_ids) > 0:
-            self.cur_operation_side[env_ids] = ~self.cur_operation_side[env_ids]
+            self.cur_active_side[switch_env_ids] = ~self.cur_active_side[switch_env_ids]
+
         
+        self.last_active_side[env_ids] = self.cur_active_side[env_ids].clone()
+
+
     def _compute_curriculum(self, env_ids):
 
         # object lift counter
         self.right_object_lift_thresh[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 20,
+            (self.lift_episode_counter[env_ids] > 20) & (self.cur_active_side[env_ids] == 1),
             torch.clamp(self.right_object_lift_thresh[env_ids] + 0.005, max=0.075),
             self.right_object_lift_thresh[env_ids]
         )
         
         self.left_object_lift_thresh[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 20,
+            (self.lift_episode_counter[env_ids] > 20) & (self.cur_active_side[env_ids] == 0),
             torch.clamp(self.left_object_lift_thresh[env_ids] + 0.005, max=0.075),
             self.left_object_lift_thresh[env_ids]
         )
 
         # finger contact distance
         self.right_finger_dist_tolerance[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 20,
+            (self.lift_episode_counter[env_ids] > 20) & (self.cur_active_side[env_ids] == 1),
             torch.clamp(self.right_finger_dist_tolerance[env_ids] - 0.005, min=0.05),
             self.right_finger_dist_tolerance[env_ids]
         )
 
         self.left_finger_dist_tolerance[env_ids] = torch.where(
-            self.lift_episode_counter[env_ids] > 20,
+            (self.lift_episode_counter[env_ids] > 20) & (self.cur_active_side[env_ids] == 0),
             torch.clamp(self.left_finger_dist_tolerance[env_ids] - 0.005, min=0.05),
             self.left_finger_dist_tolerance[env_ids]
         )
@@ -1967,26 +2157,52 @@ class HammerAssemblyEnv(DirectRLEnv):
         #     self.reset_to_last_success_ratio = max(self.reset_to_last_success_ratio-0.01, 0.05)
 
         # reduce the threshold for reaching the sub goal
-        if len(self.csbuffer) > self.num_eval_envs and statistics.mean(self.csbuffer) > self.max_consecutive_success - 0.5:
-            self.goal_reach_episode_counter[env_ids] += 1
-            # self.csbuffer.clear() # reset buffer
+        # @TODO
+        
+        if len(self.csbuffer) > self.num_eval_envs:
+            if statistics.mean(self.csbuffer) > self.switch_idx:
+                if self.init_side == 'left':
+                    self.left_goal_reach_episode_counter[env_ids] += 1
+                else:
+                    self.right_goal_reach_episode_counter[env_ids] += 1
 
+            if statistics.mean(self.csbuffer) > self.max_consecutive_success - 1.5:
+                if self.init_side == 'left':
+                    self.right_goal_reach_episode_counter[env_ids] += 1
+                else:
+                    self.left_goal_reach_episode_counter[env_ids] += 1
+
+        # start the second arm curriculum when the first arm curriculum is finished
+        if self.init_side == 'right':
+            right_condition = (self.right_goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step)
+        else:
+            right_condition = (self.right_goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step) & (self.left_object_pos_tolerance[env_ids] < 0.0075)
         self.right_object_pos_tolerance[env_ids] = torch.where(
-            self.goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
+            right_condition,
             torch.clamp(self.right_object_pos_tolerance[env_ids] - self.pos_tolerance_reduce, min=0.005),
             self.right_object_pos_tolerance[env_ids]
         )
 
+        if self.init_side == 'left':
+            left_condition = (self.left_goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step)
+        else:
+            left_condition = (self.left_goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step) & (self.right_goal_reach_episode_counter[env_ids] < 0.0075)
         self.left_object_pos_tolerance[env_ids] = torch.where(
-            self.goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
+            left_condition,
             torch.clamp(self.left_object_pos_tolerance[env_ids] - self.pos_tolerance_reduce, min=0.005),
             self.left_object_pos_tolerance[env_ids]
         )
 
-        self.goal_reach_episode_counter[env_ids] = torch.where(
-            self.goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
+        self.right_goal_reach_episode_counter[env_ids] = torch.where(
+            self.right_goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
             0,
-            self.goal_reach_episode_counter[env_ids]
+            self.right_goal_reach_episode_counter[env_ids]
+        )
+
+        self.left_goal_reach_episode_counter[env_ids] = torch.where(
+            self.left_goal_reach_episode_counter[env_ids] > self.pos_tolerance_curriculum_step,
+            0,
+            self.left_goal_reach_episode_counter[env_ids]
         )
 
 
@@ -2052,7 +2268,7 @@ def update_rewards(reward, cond):
     return torch.where(cond, reward, 0)
 
 
-@torch.jit.script
+# @torch.jit.script
 def compute_rewards_async(
     reset_goal_buf: torch.Tensor,
     successes: torch.Tensor,
@@ -2070,10 +2286,7 @@ def compute_rewards_async(
     left_object_reached: torch.Tensor,
     left_object_lifted: torch.Tensor,
     left_goal_reached: torch.Tensor,
-    # sync states
-    object_sync_reached: torch.Tensor,
-    object_sync_lifted: torch.Tensor,
-    goal_sync_reached: torch.Tensor,
+    object_stable_placed: torch.Tensor,
     # sparse bonus indicator
     right_object_not_reached: torch.Tensor,
     right_object_not_lifted: torch.Tensor,
@@ -2081,17 +2294,16 @@ def compute_rewards_async(
     left_object_not_reached: torch.Tensor,
     left_object_not_lifted: torch.Tensor,
     left_goal_not_reached: torch.Tensor,
-    object_not_sync_reached: torch.Tensor,
-    object_not_sync_lifted: torch.Tensor,
+    object_not_stable_placed: torch.Tensor,
     # penalty
     action_penalty: torch.Tensor,
-    right_moving_penalty: torch.Tensor,
-    left_moving_penalty: torch.Tensor,
+    moving_penalty: torch.Tensor,
+    right_goal_reached_speed_penalty: torch.Tensor,
+    left_goal_reached_speed_penalty: torch.Tensor,
     # which side rewards to be used
-    use_right_side_reward: bool,
-    use_left_side_reward: bool,
-    cur_operation_side: torch.Tensor,
-    switch_point: int
+    cur_active_side: torch.Tensor,
+    switch_point: int,
+    max_consecutive_success: int
 ):
     
     """
@@ -2117,17 +2329,17 @@ def compute_rewards_async(
         torch.zeros_like(successes)
     ).float()
 
-    sync_reach_bonus = torch.where(
-        object_sync_reached & object_not_sync_reached,
-        torch.zeros_like(successes)+75,
-        torch.zeros_like(successes)
-    )
-
     stage1_reward = torch.where(
-        cur_operation_side == 0,
+        cur_active_side == 0,
         left_ee2o_reward + left_object_reached_bonus,
         right_ee2o_reward + right_object_reached_bonus
     )
+
+    # print(cur_active_side)
+    # print(stage1_reward)
+    # print(left_ee2o_reward + left_object_reached_bonus)
+    # print(right_ee2o_reward + right_object_reached_bonus)
+    # print()
 
     rewards = rewards + stage1_reward
 
@@ -2140,7 +2352,7 @@ def compute_rewards_async(
     log_dict['left_ee2o_dist_reward'] = left_ee2o_reward
     log_dict["left_object_reached"] = left_object_reached
     log_dict["left_object_reached_bonus"] = left_object_reached_bonus
-    log_dict["sync_reach_bonus"] = sync_reach_bonus
+    
     ####################
     # stage 1 ends here
     ####################
@@ -2166,14 +2378,8 @@ def compute_rewards_async(
     ).float()
 
 
-    sync_lift_bonus = torch.where(
-        object_sync_lifted & object_not_sync_lifted,
-        torch.zeros_like(successes)+400,
-        torch.zeros_like(successes)
-    )
-    
     stage2_rewards = torch.where(
-        cur_operation_side == 0,
+        cur_active_side == 0,
         left_h2o_dist_reward + left_lift_bonus,
         right_h2o_dist_reward + right_lift_bonus
     )
@@ -2191,11 +2397,10 @@ def compute_rewards_async(
     log_dict['left_object_lifted'] = left_object_lifted
 
     # update rewards based on the current stage for logging
-    log_dict['right_h2o_dist_reward'] = update_rewards(right_h2o_dist_reward, reward_stage_indicator >= 1)
-    log_dict['right_lift_bonus'] = update_rewards(right_lift_bonus, reward_stage_indicator >= 1)
-    log_dict['left_h2o_dist_reward'] = update_rewards(left_h2o_dist_reward, reward_stage_indicator >= 1)
-    log_dict['left_lift_bonus'] = update_rewards(left_lift_bonus, reward_stage_indicator >= 1)
-    log_dict['sync_lift_bonus'] = update_rewards(sync_lift_bonus, reward_stage_indicator >= 1)
+    log_dict['right_h2o_dist_reward'] = update_rewards(right_h2o_dist_reward, (reward_stage_indicator >= 1) & (cur_active_side == 1))
+    log_dict['right_lift_bonus'] = update_rewards(right_lift_bonus, (reward_stage_indicator >= 1) & (cur_active_side == 1))
+    log_dict['left_h2o_dist_reward'] = update_rewards(left_h2o_dist_reward, (reward_stage_indicator >= 1) & (cur_active_side == 0))
+    log_dict['left_lift_bonus'] = update_rewards(left_lift_bonus, (reward_stage_indicator >= 1) & (cur_active_side == 0))
 
     ####################
     # stage 2 ends here
@@ -2213,39 +2418,22 @@ def compute_rewards_async(
 
     right_goal_reached_bonus = torch.where(
         right_goal_reached & right_goal_not_reached,
-        torch.zeros_like(successes) + 4000,
+        torch.zeros_like(successes) + 1000,
         torch.zeros_like(successes)
     ).float()
     
     left_goal_reached_bonus = torch.where(
         left_goal_reached & left_goal_not_reached,
-        torch.zeros_like(successes) + 4000,
+        torch.zeros_like(successes) + 1000,
         torch.zeros_like(successes)
     ).float()
 
 
-    sync_goal_bonus = torch.where(
-        goal_sync_reached,
-        torch.zeros_like(successes) + 10000,
-        torch.zeros_like(successes)
-    )
-
-    right_moving_penalty = torch.where(
-        (~right_goal_not_reached) & (~right_goal_reached),
-        -5 * right_moving_penalty,
-        0.0
-    )
-
-    left_moving_penalty = torch.where(
-        (~left_goal_not_reached) & (~left_goal_reached),
-        -5 * left_moving_penalty,
-        0.0
-    )
 
     stage3_rewards = torch.where(
-        cur_operation_side == 0,
-        left_goal_dist_reward + left_goal_reached_bonus + left_moving_penalty,
-        right_goal_dist_reward + right_goal_reached_bonus + right_moving_penalty
+        cur_active_side == 0,
+        left_goal_dist_reward + left_goal_reached_bonus - left_goal_reached_speed_penalty,
+        right_goal_dist_reward + right_goal_reached_bonus - right_goal_reached_speed_penalty
     )
     
     rewards = torch.where(
@@ -2259,20 +2447,52 @@ def compute_rewards_async(
     log_dict['right_goal_reached'] = right_goal_reached
     log_dict['left_goal_dist'] = left_goal_dist
     log_dict['left_goal_reached'] = left_goal_reached
-    log_dict['right_goal_dist_reward'] = update_rewards(right_goal_dist_reward, reward_stage_indicator >= 2)
-    log_dict['right_goal_reached_bonus'] = update_rewards(right_goal_reached_bonus, reward_stage_indicator >= 2)
-    log_dict["right_move_penalty"] = update_rewards(right_moving_penalty, reward_stage_indicator >= 2)
-    log_dict['left_goal_dist_reward'] = update_rewards(left_goal_dist_reward, reward_stage_indicator >= 2)
-    log_dict['left_goal_reached_bonus'] = update_rewards(left_goal_reached_bonus, reward_stage_indicator >= 2)
-    log_dict["left_move_penalty"] = update_rewards(left_moving_penalty, reward_stage_indicator >= 2)
-    log_dict['sync_goal_bonus'] = update_rewards(sync_goal_bonus, reward_stage_indicator >= 2)
+    log_dict['object_stable_placed'] = object_stable_placed
+    
+    log_dict['right_goal_dist_reward'] = update_rewards(right_goal_dist_reward, (reward_stage_indicator >= 2) & (cur_active_side == 1))
+    log_dict['right_goal_reached_bonus'] = update_rewards(right_goal_reached_bonus, (reward_stage_indicator >= 2) & (cur_active_side == 1))
+    log_dict["right_goal_reached_speed_penalty"] = update_rewards(right_goal_reached_speed_penalty, (reward_stage_indicator >= 2) & (cur_active_side == 1))
+    log_dict['left_goal_dist_reward'] = update_rewards(left_goal_dist_reward, (reward_stage_indicator >= 2) & (cur_active_side == 0))
+    log_dict['left_goal_reached_bonus'] = update_rewards(left_goal_reached_bonus, (reward_stage_indicator >= 2) & (cur_active_side == 0))
+    log_dict["left_goal_reached_speed_penalty"] = update_rewards(left_goal_reached_speed_penalty, (reward_stage_indicator >= 2) & (cur_active_side == 0))
+    
 
     ####################
     # stage 3 ends here
     ####################
 
-    # Scale up rewards for later stage    
-    rewards = rewards * (successes+1) - 0.001 * action_penalty
+    # Give a bonus if the agent made a stable and good placement
+    stable_placement_bonus = torch.where(
+        object_stable_placed & object_not_stable_placed,
+        2000,
+        0.0
+    )
+
+    # if torch.any(stable_placement_bonus > 0):
+    #     print("gain placement rewards")
+
+    # Give a huge bonus if the agent finish one side job
+    is_switch_goal_completed = (reward_stage_indicator == 3) & (successes == (switch_point - 1))
+    switch_bonus = torch.where(
+        is_switch_goal_completed,
+        4000,
+        0.0
+    )
+
+    rewards = rewards + stable_placement_bonus + switch_bonus
+    rewards = rewards - action_penalty - moving_penalty # try to limit the output of inactive side close to 0.0
+
+
+    log_dict['stable_placement_bonus'] = stable_placement_bonus
+    log_dict['switch_bonus'] = switch_bonus
+
+    # # Scale up rewards for later stage    
+    # rewards = torch.where(
+    #     successes >= switch_point,
+    #     rewards * (successes+1),
+    #     rewards
+    # )
+    # rewards = rewards * (successes+1) - 0.001 * action_penalty
 
     goal_resets = torch.where(
         reward_stage_indicator == 3,
@@ -2281,13 +2501,14 @@ def compute_rewards_async(
     )
     successes = successes + goal_resets # success count
 
-    # Give a huge bonus if the agent finish one side job
-    rewards = torch.where(
-        successes == switch_point,
-        rewards + 20000,
-        rewards
+
+    completion_bonus = torch.where(
+        successes == max_consecutive_success,
+        10000,
+        0.0
     )
-    
+    log_dict['completion_bonus'] = completion_bonus
+
     return (
         rewards / 100., goal_resets, successes, log_dict, 
     )
