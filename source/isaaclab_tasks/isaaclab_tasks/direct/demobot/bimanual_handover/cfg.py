@@ -41,7 +41,7 @@ from isaaclab.sensors import (
     
 
 @configclass
-class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
+class HandoverEnvBaseCfg(DirectRLEnvCfg):
     # env
     decimation = 2
     episode_length_s = 100.0
@@ -276,8 +276,8 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
 
     # reward scales
     # reset
-    reset_position_noise = 0.1  # range of position at reset
-    reset_rotation_noise = 0.25
+    reset_position_noise = 0.01  # range of position at reset
+    reset_rotation_noise = 0.1
     reset_dof_pos_noise = 0.05  # range of dof pos at reset
     reset_dof_vel_noise = 0.0  # range of dof vel at reset
     # reward scales
@@ -327,7 +327,7 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
 
 # use object keypoint
 @configclass
-class HammerAssemblyEnvCfg_vel_wref_async_kpts(HammerAssemblyEnvBaseCfg):
+class HandoverEnvCfg_vel_wref_async_kpts(HandoverEnvBaseCfg):
     control_mode = 'vel'
     use_ref = True
     reward_type = 'async'
@@ -336,7 +336,7 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts(HammerAssemblyEnvBaseCfg):
 
 # use object keypoint
 @configclass
-class HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric(HammerAssemblyEnvBaseCfg):
+class HandoverEnvCfg_vel_wref_async_kpts_asymmetric(HandoverEnvBaseCfg):
     control_mode = 'vel'
     use_ref = True
     reward_type = 'async'
@@ -346,7 +346,7 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric(HammerAssemblyEnvBaseC
     
 
 @configclass
-class HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric_rnd(HammerAssemblyEnvBaseCfg):
+class HandoverEnvCfg_vel_wref_async_kpts_asymmetric_rnd(HandoverEnvBaseCfg):
     control_mode = 'vel'
     use_ref = True
     reward_type = 'async'
@@ -358,7 +358,7 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric_rnd(HammerAssemblyEnvB
 
 
 @configclass
-class HammerAssemblyEnvCfg_vel_wref_async_kpts_right(HammerAssemblyEnvBaseCfg):
+class HandoverEnvCfg_vel_wref_async_kpts_right(HandoverEnvBaseCfg):
     action_space = 23
 
     control_mode = 'vel'
@@ -372,7 +372,7 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts_right(HammerAssemblyEnvBaseCfg):
 
 
 @configclass
-class HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric(HammerAssemblyEnvBaseCfg):
+class HandoverEnvCfg_vel_wref_async_kpts_right_asymmetric(HandoverEnvBaseCfg):
     action_space = 23
 
     control_mode = 'vel'
@@ -388,7 +388,7 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric(HammerAssemblyEn
 
 
 @configclass
-class HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric_rnd(HammerAssemblyEnvBaseCfg):
+class HandoverEnvCfg_vel_wref_async_kpts_right_asymmetric_rnd(HandoverEnvBaseCfg):
     action_space = 23
 
     control_mode = 'vel'
@@ -405,7 +405,7 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts_right_asymmetric_rnd(HammerAssemb
 
 
 @configclass
-class HammerAssemblyEnvCfg_vel_wref_async_kpts_left(HammerAssemblyEnvBaseCfg):
+class HandoverEnvCfg_vel_wref_async_kpts_left(HandoverEnvBaseCfg):
     action_space = 23
     
     control_mode = 'vel'
@@ -419,7 +419,7 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts_left(HammerAssemblyEnvBaseCfg):
 
 
 @configclass
-class HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric(HammerAssemblyEnvBaseCfg):
+class HandoverEnvCfg_vel_wref_async_kpts_left_asymmetric(HandoverEnvBaseCfg):
     action_space = 23
     
     control_mode = 'vel'
@@ -435,7 +435,7 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric(HammerAssemblyEnv
 
 
 @configclass
-class HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric_rnd(HammerAssemblyEnvBaseCfg):
+class HandoverEnvCfg_vel_wref_async_kpts_left_asymmetric_rnd(HandoverEnvBaseCfg):
     action_space = 23
     
     control_mode = 'vel'

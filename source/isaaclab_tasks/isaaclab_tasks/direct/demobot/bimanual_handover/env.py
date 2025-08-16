@@ -41,64 +41,15 @@ from isaaclab.sensors import (
 )
 
 from .cfg import (
-    HammerAssemblyEnvCfg_vel_wref_async_kpts,
-    HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric,
-    HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric_rnd,
+    HandoverEnvCfg_vel_wref_async_kpts,
+    HandoverEnvCfg_vel_wref_async_kpts_asymmetric,
 )
 import matplotlib.pyplot as plt
 
 
 
-def plot(delta_qpos, joint_names, output_f):
-    tgt_joint_names = [
-        "right_index_joint_3",
-        "right_middle_joint_3",
-        "right_ring_joint_3", 
-        "right_thumb_joint_3",
-        "left_index_joint_3",
-        "left_middle_joint_3",
-        "left_ring_joint_3", 
-        "left_thumb_joint_3",
-    ]
-    for i, jname in enumerate(joint_names):
-        if jname not in tgt_joint_names:
-            continue
-            
-        idx = joint_names.index(jname)
-        qpos = delta_qpos[:, idx]
 
-        fig, ax = plt.subplots(figsize=(18, 12))
-        ax.plot(qpos, label='delta_q')
-        ax.set_title(f'{jname}')
-        ax.legend(fontsize=10)
-        ax.tick_params(axis='both', labelsize=10)
-
-        plt.tight_layout()
-        plt.savefig(f'./{jname}.pdf', dpi=300)
-        plt.close(fig)  # Close the figure to avoid memory issues
-
-
-def plot_curve(log_episode):
-    from glob import glob
-    num_episode = len(glob("./episode_log_*.png"))
-    num_figures = len(log_episode.keys())
-    nrow = 4
-    ncol = num_figures // 4 + 1
-    fig, axes = plt.subplots(ncol, nrow, figsize=(16, 8), sharey=True)
-    axes = axes.flatten()
-
-    for ax, (name, values) in zip(axes, log_episode.items()):
-        x = list(range(len(values)))
-        ax.plot(x, values)
-        ax.set_title(name)
-        ax.set_xlabel("Step")
-        ax.grid(True)
-    
-    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig(f'./episode_log_{num_episode}.png')
-
-
-class HammerAssemblyEnv(DirectRLEnv):
+class HandoverEnv(DirectRLEnv):
     # env initialization
     #   |-- super().__init__()
     #      |-- _setup_scene()
@@ -113,9 +64,8 @@ class HammerAssemblyEnv(DirectRLEnv):
     #   |-- _get_observations()
     cfg: Optional[
         Union[
-            HammerAssemblyEnvCfg_vel_wref_async_kpts,
-            HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric,
-            HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric_rnd,
+            HandoverEnvCfg_vel_wref_async_kpts,
+            HandoverEnvCfg_vel_wref_async_kpts_asymmetric,
         ]
     ]
     
@@ -123,9 +73,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         self, 
         cfg: Optional[
             Union[
-                HammerAssemblyEnvCfg_vel_wref_async_kpts,
-                HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric,
-                HammerAssemblyEnvCfg_vel_wref_async_kpts_asymmetric_rnd,
+                HandoverEnvCfg_vel_wref_async_kpts,
+                HandoverEnvCfg_vel_wref_async_kpts_asymmetric,
             ]
         ], 
         render_mode: str | None = None, 
@@ -381,16 +330,6 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.pos_tolerance_reduce = 0.0025 if self.cfg.use_left_side_reward and self.cfg.use_right_side_reward else 0.005
         self.reset_to_last_success_ratio = getattr(self.cfg, "reset_to_last_success_ratio", 0.0)
         print("reset_to_last_success_ratio: ", self.reset_to_last_success_ratio)
-
-        self.reset_dof_pos_noise = self.cfg.reset_dof_pos_noise * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-        self.reset_dof_vel_noise = self.cfg.reset_dof_vel_noise * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-        self.reset_position_noise = self.cfg.reset_position_noise * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-        self.reset_rotation_noise = self.cfg.reset_rotation_noise * torch.ones(self.num_envs, dtype=torch.float, device=self.device)
-
-        # unit tensors
-        self.x_unit_tensor = torch.tensor([1, 0, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
-        self.y_unit_tensor = torch.tensor([0, 1, 0], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
-        self.z_unit_tensor = torch.tensor([0, 0, 1], dtype=torch.float, device=self.device).repeat((self.num_envs, 1))
 
 
         #####################
@@ -1770,11 +1709,11 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.left_goal_marker.visualize(self.left_goal_pos+self.scene.env_origins, self.left_goal_rot)
 
         # reset object
-        _reset_object(self.right_object, add_noise=True)
-        _reset_object(self.left_object, add_noise=True)
+        _reset_object(self.right_object, add_noise=False)
+        _reset_object(self.left_object, add_noise=False)
 
         # reset hand
-        _reset_robot(self.robot, add_noise=True)
+        _reset_robot(self.robot)
 
     def _reset_to(
         self,
@@ -2215,8 +2154,6 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.left_goal_reach_episode_counter[env_ids]
         )
 
-        #@TODO
-        # maybe add a curriculum for the noise level of the object position and rotation? 
 
 
 
@@ -2240,7 +2177,6 @@ def randomize_rotation(rand0, rand1, x_unit_tensor, y_unit_tensor):
 
 @torch.jit.script
 def rotation_distance(object_rot, target_rot):
-    # Orientation alignment for the cube in hand and goal cube
     quat_diff = quat_mul(object_rot, quat_conjugate(target_rot))
     return 2.0 * torch.asin(torch.clamp(torch.norm(quat_diff[:, 1:4], p=2, dim=-1), max=1.0))  # changed quat convention
 
