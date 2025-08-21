@@ -220,3 +220,118 @@ class HammerAssemblyPPORunnerCfg_vel_wref_async_kpts_left_asymmetric_rnd(HammerA
         'project': 'demobot-hammer-assembly-async',
         'run_name': 'left_kpts_asymmetric_rnd'
     }
+
+
+
+# Baseline experiments
+################################################################
+# with reference, velocity control, with/without reaching stage
+################################################################
+@configclass
+class OursPPORunnerCfg_wref_vel_wreach(HammerAssemblyPPORunnerCfg):
+    experiment_name = "async-assembly-ours"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'async-baseline-comparison',
+        'run_name': 'ours'
+    }
+
+@configclass
+class BaselinePPORunnerCfg_wref_vel_woreach(HammerAssemblyPPORunnerCfg):
+    experiment_name = "async-assembly-wref-vel-woreach"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'async-baseline-comparison',
+        'run_name': 'wref-vel-woreach'
+    }
+
+################################################################
+# with reference, position control, with/without reaching stage
+################################################################
+@configclass
+class BaselinePPORunnerCfg_wref_pos_wreach(HammerAssemblyPPORunnerCfg):
+    experiment_name = "async-assembly-wref-pos-wreach"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'async-baseline-comparison',
+        'run_name': 'wref-pos-wreach'
+    }
+
+@configclass
+class BaselinePPORunnerCfg_wref_pos_woreach(HammerAssemblyPPORunnerCfg):
+    experiment_name = "async-assembly-wref-pos-woreach"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'async-baseline-comparison',
+        'run_name': 'wref-pos-woreach'
+    }
+
+
+################################################################
+# without reference, velocity control, with/without reaching stage
+################################################################
+@configclass
+class BaselinePPORunnerCfg_woref_vel_wreach(HammerAssemblyPPORunnerCfg):
+    experiment_name = "async-assembly-woref-vel-wreach"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'async-baseline-comparison',
+        'run_name': 'woref-vel-wreach'
+    }
+
+@configclass
+class BaselinePPORunnerCfg_woref_vel_woreach(HammerAssemblyPPORunnerCfg):
+    experiment_name = "async-assembly-woref-vel-woreach"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'async-baseline-comparison',
+        'run_name': 'woref-vel-woreach'
+    }
+
+
+################################################################
+# without reference, position control, with/without reaching stage
+################################################################
+@configclass
+class BaselinePPORunnerCfg_woref_pos_wreach(HammerAssemblyPPORunnerCfg):
+    experiment_name = "async-assembly-woref-pos-wreach"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'async-baseline-comparison',
+        'run_name': 'woref-pos-wreach'
+    }
+
+@configclass
+class BaselinePPORunnerCfg_woref_pos_woreach(HammerAssemblyPPORunnerCfg):
+    experiment_name = "async-assembly-woref-pos-woreach"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'async-baseline-comparison',
+        'run_name': 'woref-pos-woreach'
+    }
+
+
+##############################################################################
+# with reference, velocity control, with reaching stage, disable chunk-split #
+##############################################################################
+@configclass
+class BaselinePPORunnerCfg_wref_vel_wreach_nochunk(HammerAssemblyPPORunnerCfg):
+    experiment_name = "async-assembly-wref-vel-wreach-nochunk"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'async-baseline-comparison',
+        'run_name': 'wref-vel-wreach-nochunk'
+    }
+
+
+######################################################################################
+# with reference, velocity control, with reaching stage, disable success-gated reset #
+######################################################################################
+@configclass
+class BaselinePPORunnerCfg_wref_vel_wreach_noreset(HammerAssemblyPPORunnerCfg):
+    experiment_name = "async-assembly-wref-vel-wreach-noreset"
+    wandb_kwargs = {
+        'entity': 'hilbertxu',
+        'project': 'async-baseline-comparison',
+        'run_name': 'wref-vel-wreach-noreset'
+    }

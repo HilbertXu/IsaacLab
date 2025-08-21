@@ -150,6 +150,9 @@ class HammerAssemblyEnv(DirectRLEnv):
 
         # Basic task settings
         self.control_mode = self.cfg.control_mode
+        self.with_reach_stage = self.cfg.with_reach_stage
+        self.enable_chunk_split = self.cfg.enable_chunk_split
+        self.enable_success_reset = self.cfg.enable_success_reset
         self.use_ref = self.cfg.use_ref
         self.reward_type = self.cfg.reward_type
         self.reach_only = self.cfg.reach_only
@@ -559,6 +562,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.ref_chunk_step_idx, self.ref_chunk_max_steps, \
                 self.max_consecutive_success= self._setup_action_chunks(self.action_buffer, self.right_offset, self.left_offset)
         
+
         # initialize robot
         self.cfg.robot_cfg.init_state.joint_pos = self.robot_init_qpos
         self.robot = Articulation(self.cfg.robot_cfg)
@@ -665,63 +669,65 @@ class HammerAssemblyEnv(DirectRLEnv):
 
     
     def _compute_action(self, pred_actions, ref_actions=None):
-        def _compute_one_side(qpos, ref_actions, pred_actions, indices):
+        def _compute_one_side(qpos, ref_actions, pred_actions, indices, control_mode):
             out = qpos.clone()
-            out[:, indices] = ref_actions[:, indices] + \
-                                self.robot_dof_speed_scales[:, indices] * self.dt * pred_actions[:, indices] * self.cfg.action_scale
-            
+            if ref_actions is not None:
+                if control_mode == 'vel':
+                    out[:, indices] = ref_actions[:, indices] + \
+                                        self.robot_dof_speed_scales[:, indices] * self.dt * pred_actions[:, indices] * self.cfg.action_scale
+                elif control_mode == 'pos':
+                    out[:, indices] = ref_actions[:, indices] + \
+                        scale(pred_actions[:, indices], self.robot_dof_lower_limits[:, indices], self.robot_dof_upper_limits[:, indices])
+            else:
+                if control_mode == 'vel':
+                    out[:, indices] = self.prev_targets[:, indices] + \
+                                        self.robot_dof_speed_scales[:, indices] * self.dt * pred_actions[:, indices] * self.cfg.action_scale
+                elif control_mode == 'pos':
+                    out[:, indices] = scale(pred_actions[:, indices], self.robot_dof_lower_limits[:, indices], self.robot_dof_upper_limits[:, indices])
+                
             return out
         
-
+        out = self.robot.data.default_joint_pos[:].clone()
         if self.use_ref and ref_actions is not None:
-            out = self.robot.data.default_joint_pos[:].clone()
-            right_side_qpos = _compute_one_side(out, ref_actions, pred_actions, indices=self.right_joint_indices)
-            left_side_qpos = _compute_one_side(out, ref_actions, pred_actions, indices=self.left_joint_indices)
-            # print(out.shape, right_side_qpos.shape, left_side_qpos.shape)
-            # print(self.cur_active_side)
-
-            # out[self.cur_active_side == 0, :] = left_side_qpos[self.cur_active_side == 0, :]
-            # out[self.cur_active_side == 1, :] = right_side_qpos[self.cur_active_side == 1, :]
+            right_side_qpos = _compute_one_side(out, ref_actions=ref_actions, pred_actions=pred_actions, indices=self.right_joint_indices, control_mode=self.control_mode)
+            left_side_qpos = _compute_one_side(out, ref_actions=ref_actions, pred_actions=pred_actions, indices=self.left_joint_indices, control_mode=self.control_mode)
             
             out = torch.where(
                 (self.cur_active_side).unsqueeze(-1).repeat(1, self.num_robot_dofs) == 0,
                 left_side_qpos,
                 right_side_qpos
             )
-
-
-            # print("actions")
-            # print(out[self.cur_active_side == 0])
-            # print(left_side_qpos[self.cur_active_side == 0])
-            # print("="*50)
-            # print(out[self.cur_active_side == 1])
-            # print(left_side_qpos[self.cur_active_side == 1])
-            # print()
-
         else:
-            out = pred_actions.clone()
+            right_side_qpos = _compute_one_side(out, ref_actions=None, pred_actions=pred_actions, indices=self.right_joint_indices, control_mode=self.control_mode)
+            left_side_qpos = _compute_one_side(out, ref_actions=None, pred_actions=pred_actions, indices=self.left_joint_indices, control_mode=self.control_mode)
             
-        # with ref trajectory, we keep the hand open until the object is reached
-        out_fix_hand = out.clone()
-        out_fix_hand[:, self.hand_joint_indices] = self.robot.data.default_joint_pos[:, self.hand_joint_indices]
-
+            out = torch.where(
+                (self.cur_active_side).unsqueeze(-1).repeat(1, self.num_robot_dofs) == 0,
+                left_side_qpos,
+                right_side_qpos
+            )
         
+        if self.with_reach_stage:
+            # with ref trajectory, we keep the hand open until the object is reached
+            out_fix_hand = out.clone()
+            out_fix_hand[:, self.hand_joint_indices] = self.robot.data.default_joint_pos[:, self.hand_joint_indices]
 
-        object_reached = torch.where(
-            self.cur_active_side == 0,
-            ~self.left_object_not_reached,
-            ~self.right_object_not_reached
-        )
-        out = torch.where(
-            (object_reached).unsqueeze(-1).repeat(1, self.num_robot_dofs),
-            out,
-            out_fix_hand
-        )
+            object_reached = torch.where(
+                self.cur_active_side == 0,
+                ~self.left_object_not_reached,
+                ~self.right_object_not_reached
+            )
+            out = torch.where(
+                (object_reached).unsqueeze(-1).repeat(1, self.num_robot_dofs),
+                out,
+                out_fix_hand
+            )
+        
             
         return out
 
     
-    def _pre_physics_step_vel(self, actions: torch.Tensor) -> None:
+    def _pre_physics_step(self, actions: torch.Tensor) -> None:
         '''
         1. start from the first chunk, set the target object pose
         2. Execute the ref_qpos + action in the first chunk
@@ -743,7 +749,7 @@ class HammerAssemblyEnv(DirectRLEnv):
                 normalize=False
             )
         else:
-            ref_action = self.prev_targets[:].clone() # no ref, start with all zero actions.
+            ref_action = None # no ref, start from init qpos.
         
         self.robot_dof_targets[:] = self._compute_action(
             ref_actions=ref_action, 
@@ -873,12 +879,13 @@ class HammerAssemblyEnv(DirectRLEnv):
             action = self._action_noise_model.apply(action)
 
         # process actions
-        if self.control_mode == 'vel':
-            self._pre_physics_step_vel(action)
-        if self.control_mode == 'pos':
-            self._pre_physics_step_pos(action)
-        if self.control_mode == 'pos_v2':
-            self._pre_physics_step_pos_v2(action)
+        self._pre_physics_step(action)
+        # if self.control_mode == 'vel':
+        #     self._pre_physics_step_vel(action)
+        # if self.control_mode == 'pos':
+        #     self._pre_physics_step_pos(action)
+        # if self.control_mode == 'pos_v2':
+        #     self._pre_physics_step_pos_v2(action)
 
         # check if we need to do rendering within the physics loop
         # note: checked here once to avoid multiple checks within the loop
@@ -907,6 +914,7 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.common_step_counter += 1  # total step (common for all envs)
         self.ref_chunk_step_idx[:, 1] += 1 # in-chunk step counter
 
+
         self._compute_intermediate_values()
 
         self.reward_buf = self._get_rewards()
@@ -925,10 +933,13 @@ class HammerAssemblyEnv(DirectRLEnv):
         reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
         
         if len(reset_env_ids) > 0:
-            self._reset_envs(
-                self.terminate | self.max_success_reached, 
-                self.truncated
-            )
+            if self.enable_success_reset:
+                self._reset_envs(
+                    self.terminate | self.max_success_reached, 
+                    self.truncated
+                )
+            else:
+                self._reset_idx(reset_env_ids)
 
         # post-step: step interval event
         if self.cfg.events:
@@ -1069,12 +1080,13 @@ class HammerAssemblyEnv(DirectRLEnv):
         self.right_h2o_dist = torch.clamp((torch.cdist(self.right_fingertip_pos, self.right_object_grasp_keypoint_cur).min(dim=-1).values).max(dim=-1).values, min=-9.0, max=9.0)
         self.left_h2o_dist = torch.clamp((torch.cdist(self.left_fingertip_pos, self.left_object_grasp_keypoint_cur).min(dim=-1).values).max(dim=-1).values, min=-9.0, max=9.0)
 
+        self.right_h2o_min_dist = torch.clamp((torch.cdist(self.right_fingertip_pos, self.right_object_grasp_keypoint_cur).min(dim=-1).values).min(dim=-1).values, min=-9.0, max=9.0)
+        self.left_h2o_min_dist = torch.clamp((torch.cdist(self.left_fingertip_pos, self.left_object_grasp_keypoint_cur).min(dim=-1).values).min(dim=-1).values, min=-9.0, max=9.0)
+
         # For lifting stage, we only care about the z-axis translation
         # 1. successes == 0, objects are not lifted, use keypoints to make sure that the agent won't try to 'flip' the object
         # 2. successes > 0, object already lifted to the first goal, use object mass center height for relaxation
         
-        
-
         self.right_lift_height = torch.where(
             self.successes == self.right_init_id,
             torch.clamp((self.right_object_keypoint_cur[:, :, 2] - self.right_object_keypoint_init[:, :, 2]).min(dim=-1).values, min=-9.0, max=9.0),
@@ -1133,8 +1145,8 @@ class HammerAssemblyEnv(DirectRLEnv):
         )
 
         # compute goaling stage
-        self.right_goal_reached = self.right_goal_dist < self.right_object_pos_tolerance
-        self.left_goal_reached = self.left_goal_dist < self.left_object_pos_tolerance
+        self.right_goal_reached = (self.right_goal_dist < self.right_object_pos_tolerance) & (self.right_h2o_min_dist < 0.075)
+        self.left_goal_reached = (self.left_goal_dist < self.left_object_pos_tolerance) & (self.left_h2o_min_dist < 0.075)
         
         self.right_goal_reached_speed_penalty = torch.where(
             self.right_goal_dist < (self.right_object_pos_tolerance + 0.01),
@@ -1172,11 +1184,23 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.reward_stage_indicator
         )
 
+        self.object_dropped = torch.where(
+            self.cur_active_side == 0,
+            (self.left_h2o_min_dist > 0.01) & ((self.successes > 0) & (self.successes != self.switch_idx)),
+            (self.right_h2o_min_dist > 0.01) & ((self.successes > 0) & (self.successes != self.switch_idx))
+        )
+
+        self.object_dropped_penalty = torch.where(
+            self.object_dropped,
+            200, 
+            0.0
+        )
+
         # compute penalty items
         self.action_penalty = torch.where(
             self.cur_active_side == 0, # if left side is activated
-            1.0 * torch.norm(self.pred_actions[:, self.right_joint_indices], p=2, dim=-1) + 0.01* torch.norm(self.pred_actions[:, self.left_joint_indices], p=2, dim=-1),
-            1.0 * torch.norm(self.pred_actions[:, self.left_joint_indices], p=2, dim=-1) + 0.01* torch.norm(self.pred_actions[:, self.right_joint_indices], p=2, dim=-1)
+            1.0 * torch.norm(self.pred_actions[:, self.right_joint_indices], p=2, dim=-1) + 0.0001* torch.norm(self.pred_actions[:, self.left_joint_indices], p=2, dim=-1),
+            1.0 * torch.norm(self.pred_actions[:, self.left_joint_indices], p=2, dim=-1) + 0.0001* torch.norm(self.pred_actions[:, self.right_joint_indices], p=2, dim=-1)
         )
 
         if self.init_side == 'left':
@@ -1539,6 +1563,7 @@ class HammerAssemblyEnv(DirectRLEnv):
             # penalty
             action_penalty=self.action_penalty,
             moving_penalty=self.moving_penalty,
+            object_dropped_penalty=self.object_dropped_penalty,
             right_goal_reached_speed_penalty=self.right_goal_reached_speed_penalty,
             left_goal_reached_speed_penalty=self.left_goal_reached_speed_penalty,
             # which side rewards to be used
@@ -1650,13 +1675,22 @@ class HammerAssemblyEnv(DirectRLEnv):
         #   |-- the object dropped after being lifted
         #   |-- we reached the last sub-goal
         fall_terminated = (self.right_object_pos[:, 2] < 0.1) | (self.left_object_pos[:, 2] < 0.1)
+
+        right_h2o_min_dist = torch.clamp((torch.cdist(self.right_fingertip_pos, self.right_object_grasp_keypoint_cur).min(dim=-1).values).min(dim=-1).values, min=-9.0, max=9.0)
+        left_h2o_min_dist = torch.clamp((torch.cdist(self.left_fingertip_pos, self.left_object_grasp_keypoint_cur).min(dim=-1).values).min(dim=-1).values, min=-9.0, max=9.0)
         
+        drop_terminated = torch.where(
+            (self.cur_active_side == 0),
+            (left_h2o_min_dist > 0.01) & ((self.successes > 0) & (self.successes != self.switch_idx)),
+            (right_h2o_min_dist > 0.01) & ((self.successes > 0) & (self.successes != self.switch_idx))
+        )
+
         succeed_terminated = self.successes >= self.max_consecutive_success
 
         # all timeout: the current action chunk reaches to its end but not reached goal yet
         truncated = (self.reward_stage_indicator < 3) & (self.ref_chunk_step_idx[:, 1] >= self.ref_chunk_max_steps[self.ref_chunk_step_idx[:, 0]])
 
-        return fall_terminated, succeed_terminated, truncated
+        return fall_terminated | drop_terminated, succeed_terminated, truncated
 
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
@@ -1825,103 +1859,19 @@ class HammerAssemblyEnv(DirectRLEnv):
         # set the state
         self.scene.reset_to(state, env_ids, is_relative=is_relative)
         
-    # def _reset_envs(
-    #     self,
-    #     terminate: torch.Tensor,
-    #     truncated: torch.Tensor,
-    # ):
-    #     """
-    #     Resets environments based on termination, timeout, or max success conditions.
-
-    #     This method creates a clean partition of environments to be reset:
-    #     1.  A small subset of training environments that timed out but had prior success
-    #         may be reset to their last successful state.
-    #     2.  All other environments that need a reset (due to termination, max success,
-    #         or timeout) are reset to their initial state.
-    #     """
-    #     # Determine the complete set of environments that need any form of reset
-    #     all_reset_mask = terminate | truncated
-    #     all_reset_ids = all_reset_mask.nonzero(as_tuple=False).squeeze(-1)
-
-    #     # If no environments need resetting, return early.
-    #     if all_reset_ids.numel() == 0:
-    #         return
-
-    #     # --- Partitioning Logic ---
-
-    #     # 1. Identify candidates to be reset to their LAST successful state.
-    #     # These are training envs that timed out, had prior success, and did NOT terminate or reach max success.
-    #     # This is the most specific category, so we identify it first.
-    #     reset_to_last_succ_candidate_mask = (
-    #         truncated &                               # Timed out without reaching goal
-    #         ~self.eval_env_mask &                     # Is a training environment
-    #         (self.successes > 0) &                    # Has had at least one success
-    #         ~terminate                                # Did NOT terminate (e.g., fall off table)
-    #     )
-        
-    #     last_succ_candidate_ids = reset_to_last_succ_candidate_mask.nonzero(as_tuple=False).squeeze(-1)
-
-    #     # From the candidates, sample a portion based on the configured ratio
-    #     final_last_succ_ids = torch.tensor([], dtype=torch.long, device=self.device)
-    #     if last_succ_candidate_ids.numel() > 0:
-    #         num_to_sample = int(math.ceil(last_succ_candidate_ids.numel() * self.reset_to_last_success_ratio))
-    #         if num_to_sample > 0:
-    #             perm = torch.randperm(last_succ_candidate_ids.numel(), device=self.device)
-    #             final_last_succ_ids = last_succ_candidate_ids[perm[:num_to_sample]]
-
-    #     # 2. All other environments needing a reset go to the INITIAL state.
-    #     # We create a mask for the final "last success" envs to easily exclude them
-    #     # from the set of envs to be reset to their initial state.
-    #     final_last_succ_mask = torch.zeros_like(all_reset_mask)
-    #     if final_last_succ_ids.numel() > 0:
-    #         final_last_succ_mask[final_last_succ_ids] = True
-
-    #     reset_to_init_mask = all_reset_mask & ~final_last_succ_mask
-    #     final_init_ids = reset_to_init_mask.nonzero(as_tuple=False).squeeze(-1)
-        
-    #     # --- Perform Resets ---
-    #     # make sure reset is performed for all needed envs
-    #     assert all_reset_ids.numel() == (final_init_ids.numel() + final_last_succ_ids.numel())
-
-    #     if final_init_ids.numel() > 0:
-    #         # print(f"Resetting {final_init_ids.numel()} env(s) to initial state.")
-    #         self._reset_idx(final_init_ids)
-
-    #     if final_last_succ_ids.numel() > 0:
-    #         # print(f"Resetting {final_last_succ_ids.numel()} env(s) to last successful state.")
-    #         self._reset_to(
-    #             self.last_success_state,
-    #             final_last_succ_ids,
-    #             seed=None,
-    #             is_relative=False
-    #         )
-        
-    #     # update articulation kinematics
-    #     self.scene.write_data_to_sim()
-    #     self.sim.forward()
-
-    #     # if sensors are added to the scene, make sure we render to reflect changes in reset
-    #     if self.sim.has_rtx_sensors() and self.cfg.rerender_on_reset:
-    #         self.sim.render()
-
-    #     self._compute_intermediate_values()
-
-
-
     def _reset_envs(
         self,
         terminate: torch.Tensor,
         truncated: torch.Tensor,
     ):
         """
-        Resets environments with a specialized curriculum for the task switch.
+        Resets environments based on termination, timeout, or max success conditions.
 
         This method creates a clean partition of environments to be reset:
-        1.  (NEW) Envs that fail immediately after switching tasks are ALWAYS reset
-            to their last successful state to enforce practice on the switch.
-        2.  A small subset of other training environments that timed out but had prior success
-            may be reset to their last successful state based on a probability ratio.
-        3.  All other environments that need a reset are reset to their initial state.
+        1.  A small subset of training environments that timed out but had prior success
+            may be reset to their last successful state.
+        2.  All other environments that need a reset (due to termination, max success,
+            or timeout) are reset to their initial state.
         """
         # Determine the complete set of environments that need any form of reset
         all_reset_mask = terminate | truncated
@@ -1931,58 +1881,48 @@ class HammerAssemblyEnv(DirectRLEnv):
         if all_reset_ids.numel() == 0:
             return
 
-        # --- NEW Partitioning Logic with a Mandatory Curriculum ---
+        # --- Partitioning Logic ---
 
-        ## NEW ##: Identify envs that failed right AT the switch point. These get a mandatory reset-to-success.
-        # Condition: The env is resetting AND its success count is exactly the switch point.
-        # We also exclude evaluation environments from this specific curriculum.
-        reset_at_switch_mask = all_reset_mask & (self.successes == self.switch_idx) & (~self.eval_env_mask) & (~terminate)
-        final_switch_reset_ids = reset_at_switch_mask.nonzero(as_tuple=False).squeeze(-1)
-
-        ## NEW ##: Identify candidates for the ORIGINAL probabilistic reset-to-success.
-        # This is the same logic as before...
-        probabilistic_candidate_mask = (
+        # 1. Identify candidates to be reset to their LAST successful state.
+        # These are training envs that timed out, had prior success, and did NOT terminate or reach max success.
+        # This is the most specific category, so we identify it first.
+        reset_to_last_succ_candidate_mask = (
             truncated &                               # Timed out without reaching goal
             ~self.eval_env_mask &                     # Is a training environment
             (self.successes > 0) &                    # Has had at least one success
             ~terminate                                # Did NOT terminate (e.g., fall off table)
         )
-        ## NEW ##: ...BUT, we must exclude the envs that are already being reset by our mandatory rule.
-        probabilistic_candidate_mask = probabilistic_candidate_mask & ~reset_at_switch_mask
-        probabilistic_candidate_ids = probabilistic_candidate_mask.nonzero(as_tuple=False).squeeze(-1)
+        
+        last_succ_candidate_ids = reset_to_last_succ_candidate_mask.nonzero(as_tuple=False).squeeze(-1)
 
-        # Sample a portion of the probabilistic candidates based on the configured ratio
-        final_probabilistic_reset_ids = torch.tensor([], dtype=torch.long, device=self.device)
-        if probabilistic_candidate_ids.numel() > 0:
-            num_to_sample = int(math.ceil(probabilistic_candidate_ids.numel() * self.reset_to_last_success_ratio))
+        # From the candidates, sample a portion based on the configured ratio
+        final_last_succ_ids = torch.tensor([], dtype=torch.long, device=self.device)
+        if last_succ_candidate_ids.numel() > 0:
+            num_to_sample = int(math.floor(last_succ_candidate_ids.numel() * self.reset_to_last_success_ratio))
             if num_to_sample > 0:
-                perm = torch.randperm(probabilistic_candidate_ids.numel(), device=self.device)
-                final_probabilistic_reset_ids = probabilistic_candidate_ids[perm[:num_to_sample]]
-                
-        ## NEW ##: Combine both groups (mandatory and probabilistic) that will be reset to last success.
-        # torch.unique is used to be safe, although the sets should already be disjoint.
-        final_last_succ_ids = torch.unique(torch.cat([final_switch_reset_ids, final_probabilistic_reset_ids]))
+                perm = torch.randperm(last_succ_candidate_ids.numel(), device=self.device)
+                final_last_succ_ids = last_succ_candidate_ids[perm[:num_to_sample]]
 
-        ## NEW ##: All other resetting environments will be reset to the initial state.
-        # We create a mask for all "last success" envs to easily exclude them.
+        # 2. All other environments needing a reset go to the INITIAL state.
+        # We create a mask for the final "last success" envs to easily exclude them
+        # from the set of envs to be reset to their initial state.
         final_last_succ_mask = torch.zeros_like(all_reset_mask)
         if final_last_succ_ids.numel() > 0:
             final_last_succ_mask[final_last_succ_ids] = True
-        
+
         reset_to_init_mask = all_reset_mask & ~final_last_succ_mask
         final_init_ids = reset_to_init_mask.nonzero(as_tuple=False).squeeze(-1)
         
         # --- Perform Resets ---
-        # Sanity check: our partitioning should cover all resetting envs exactly once.
+        # make sure reset is performed for all needed envs
         assert all_reset_ids.numel() == (final_init_ids.numel() + final_last_succ_ids.numel())
 
         if final_init_ids.numel() > 0:
+            # print(f"Resetting {final_init_ids.numel()} env(s) to initial state.")
             self._reset_idx(final_init_ids)
 
         if final_last_succ_ids.numel() > 0:
-            # Note: This relies on `last_success_state` being correctly updated when the
-            # agent completes the first side's task, which your `_reset_target_pose` and
-            # `update_last_success_state` functions already handle.
+            # print(f"Resetting {final_last_succ_ids.numel()} env(s) to last successful state.")
             self._reset_to(
                 self.last_success_state,
                 final_last_succ_ids,
@@ -1999,6 +1939,100 @@ class HammerAssemblyEnv(DirectRLEnv):
             self.sim.render()
 
         self._compute_intermediate_values()
+
+
+
+    # def _reset_envs(
+    #     self,
+    #     terminate: torch.Tensor,
+    #     truncated: torch.Tensor,
+    # ):
+    #     """
+    #     Resets environments with a specialized curriculum for the task switch.
+
+    #     This method creates a clean partition of environments to be reset:
+    #     1.  (NEW) Envs that fail immediately after switching tasks are ALWAYS reset
+    #         to their last successful state to enforce practice on the switch.
+    #     2.  A small subset of other training environments that timed out but had prior success
+    #         may be reset to their last successful state based on a probability ratio.
+    #     3.  All other environments that need a reset are reset to their initial state.
+    #     """
+    #     # Determine the complete set of environments that need any form of reset
+    #     all_reset_mask = terminate | truncated
+    #     all_reset_ids = all_reset_mask.nonzero(as_tuple=False).squeeze(-1)
+
+    #     # If no environments need resetting, return early.
+    #     if all_reset_ids.numel() == 0:
+    #         return
+
+    #     # --- NEW Partitioning Logic with a Mandatory Curriculum ---
+
+    #     ## NEW ##: Identify envs that failed right AT the switch point. These get a mandatory reset-to-success.
+    #     # Condition: The env is resetting AND its success count is exactly the switch point.
+    #     # We also exclude evaluation environments from this specific curriculum.
+    #     reset_at_switch_mask = all_reset_mask & (self.successes == self.switch_idx) & (~self.eval_env_mask) & (~terminate)
+    #     final_switch_reset_ids = reset_at_switch_mask.nonzero(as_tuple=False).squeeze(-1)
+
+    #     ## NEW ##: Identify candidates for the ORIGINAL probabilistic reset-to-success.
+    #     # This is the same logic as before...
+    #     probabilistic_candidate_mask = (
+    #         truncated &                               # Timed out without reaching goal
+    #         ~self.eval_env_mask &                     # Is a training environment
+    #         (self.successes > 0) &                    # Has had at least one success
+    #         ~terminate                                # Did NOT terminate (e.g., fall off table)
+    #     )
+    #     ## NEW ##: ...BUT, we must exclude the envs that are already being reset by our mandatory rule.
+    #     probabilistic_candidate_mask = probabilistic_candidate_mask & ~reset_at_switch_mask
+    #     probabilistic_candidate_ids = probabilistic_candidate_mask.nonzero(as_tuple=False).squeeze(-1)
+
+    #     # Sample a portion of the probabilistic candidates based on the configured ratio
+    #     final_probabilistic_reset_ids = torch.tensor([], dtype=torch.long, device=self.device)
+    #     if probabilistic_candidate_ids.numel() > 0:
+    #         num_to_sample = int(math.ceil(probabilistic_candidate_ids.numel() * self.reset_to_last_success_ratio))
+    #         if num_to_sample > 0:
+    #             perm = torch.randperm(probabilistic_candidate_ids.numel(), device=self.device)
+    #             final_probabilistic_reset_ids = probabilistic_candidate_ids[perm[:num_to_sample]]
+                
+    #     ## NEW ##: Combine both groups (mandatory and probabilistic) that will be reset to last success.
+    #     # torch.unique is used to be safe, although the sets should already be disjoint.
+    #     final_last_succ_ids = torch.unique(torch.cat([final_switch_reset_ids, final_probabilistic_reset_ids]))
+
+    #     ## NEW ##: All other resetting environments will be reset to the initial state.
+    #     # We create a mask for all "last success" envs to easily exclude them.
+    #     final_last_succ_mask = torch.zeros_like(all_reset_mask)
+    #     if final_last_succ_ids.numel() > 0:
+    #         final_last_succ_mask[final_last_succ_ids] = True
+        
+    #     reset_to_init_mask = all_reset_mask & ~final_last_succ_mask
+    #     final_init_ids = reset_to_init_mask.nonzero(as_tuple=False).squeeze(-1)
+        
+    #     # --- Perform Resets ---
+    #     # Sanity check: our partitioning should cover all resetting envs exactly once.
+    #     assert all_reset_ids.numel() == (final_init_ids.numel() + final_last_succ_ids.numel())
+
+    #     if final_init_ids.numel() > 0:
+    #         self._reset_idx(final_init_ids)
+
+    #     if final_last_succ_ids.numel() > 0:
+    #         # Note: This relies on `last_success_state` being correctly updated when the
+    #         # agent completes the first side's task, which your `_reset_target_pose` and
+    #         # `update_last_success_state` functions already handle.
+    #         self._reset_to(
+    #             self.last_success_state,
+    #             final_last_succ_ids,
+    #             seed=None,
+    #             is_relative=False
+    #         )
+        
+    #     # update articulation kinematics
+    #     self.scene.write_data_to_sim()
+    #     self.sim.forward()
+
+    #     # if sensors are added to the scene, make sure we render to reflect changes in reset
+    #     if self.sim.has_rtx_sensors() and self.cfg.rerender_on_reset:
+    #         self.sim.render()
+
+    #     self._compute_intermediate_values()
     
 
     def reset(self, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[VecEnvObs, dict]:
@@ -2310,6 +2344,7 @@ def compute_rewards_async(
     # penalty
     action_penalty: torch.Tensor,
     moving_penalty: torch.Tensor,
+    object_dropped_penalty: torch.Tensor,
     right_goal_reached_speed_penalty: torch.Tensor,
     left_goal_reached_speed_penalty: torch.Tensor,
     # which side rewards to be used
@@ -2423,7 +2458,6 @@ def compute_rewards_async(
     # Stage 3, reaching the current sub-goals
     ##################################
     
-    
 
     right_goal_dist_reward = 15 * _tanh_distance_reward(right_goal_dist, std=0.1)
     left_goal_dist_reward = 15 * _tanh_distance_reward(left_goal_dist, std=0.1)
@@ -2439,7 +2473,6 @@ def compute_rewards_async(
         torch.zeros_like(successes) + 1000,
         torch.zeros_like(successes)
     ).float()
-
 
 
     stage3_rewards = torch.where(
@@ -2492,11 +2525,12 @@ def compute_rewards_async(
     )
 
     rewards = rewards + stable_placement_bonus + switch_bonus
-    rewards = rewards - action_penalty - moving_penalty # try to limit the output of inactive side close to 0.0
-
+    rewards = rewards - action_penalty - moving_penalty - object_dropped_penalty# try to limit the output of inactive side close to 0.0
 
     log_dict['stable_placement_bonus'] = stable_placement_bonus
     log_dict['switch_bonus'] = switch_bonus
+
+    rewards = rewards * torch.exp(successes / 2)
 
     # # Scale up rewards for later stage    
     # rewards = torch.where(
@@ -2516,9 +2550,11 @@ def compute_rewards_async(
 
     completion_bonus = torch.where(
         successes == max_consecutive_success,
-        10000,
+        100000,
         0.0
     )
+    rewards = rewards + completion_bonus
+    
     log_dict['completion_bonus'] = completion_bonus
 
     return (

@@ -277,7 +277,7 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
     # reward scales
     # reset
     reset_position_noise = 0.1  # range of position at reset
-    reset_rotation_noise = 0.25
+    reset_rotation_noise = 0.1
     reset_dof_pos_noise = 0.05  # range of dof pos at reset
     reset_dof_vel_noise = 0.0  # range of dof vel at reset
     # reward scales
@@ -317,6 +317,9 @@ class HammerAssemblyEnvBaseCfg(DirectRLEnvCfg):
     use_object_keypoint = False
     use_coordination_bonus = True
     distance_function = 'mse'
+    with_reach_stage = True
+    enable_chunk_split = True
+    enable_success_reset = True
     
     # debug
     debug = False
@@ -449,3 +452,133 @@ class HammerAssemblyEnvCfg_vel_wref_async_kpts_left_asymmetric_rnd(HammerAssembl
 
     asymmetric_obs = True
     rnd_obs = True
+
+
+
+################################################################
+# with reference, velocity control, with/without reaching stage
+################################################################
+@configclass
+class ours_wref_vel_wreach(HammerAssemblyEnvBaseCfg):
+    control_mode = 'vel'
+    use_ref = True
+    reward_type = 'async'
+    use_object_keypoint = True
+    with_reach_stage = True
+    
+    asymmetric_obs = True
+
+
+@configclass
+class Baselines_wref_vel_woreach(HammerAssemblyEnvBaseCfg):
+    control_mode = 'vel'
+    use_ref = True
+    reward_type = 'async'
+    use_object_keypoint = True
+    with_reach_stage = False
+    
+    asymmetric_obs = True
+
+################################################################
+# with reference, position control, with/without reaching stage
+################################################################
+@configclass
+class Baselines_wref_pos_wreach(HammerAssemblyEnvBaseCfg):
+    control_mode = 'pos'
+    use_ref = True
+    reward_type = 'async'
+    use_object_keypoint = True
+    with_reach_stage = True
+    
+    asymmetric_obs = True
+
+
+@configclass
+class Baselines_wref_pos_woreach(HammerAssemblyEnvBaseCfg):
+    control_mode = 'pos'
+    use_ref = True
+    reward_type = 'async'
+    use_object_keypoint = True
+    with_reach_stage = False
+    
+    asymmetric_obs = True
+
+
+################################################################
+# without reference, velocity control, with/without reaching stage
+################################################################
+@configclass
+class Baselines_woref_vel_wreach(HammerAssemblyEnvBaseCfg):
+    control_mode = 'vel'
+    use_ref = False
+    reward_type = 'async'
+    use_object_keypoint = True
+    with_reach_stage = True
+    
+    asymmetric_obs = True
+
+@configclass
+class Baselines_woref_vel_woreach(HammerAssemblyEnvBaseCfg):
+    control_mode = 'vel'
+    use_ref = False
+    reward_type = 'async'
+    use_object_keypoint = True
+    with_reach_stage = False
+    
+    asymmetric_obs = True
+
+
+################################################################
+# without reference, position control, with/without reaching stage
+################################################################
+@configclass
+class Baselines_woref_pos_wreach(HammerAssemblyEnvBaseCfg):
+    control_mode = 'pos'
+    use_ref = False
+    reward_type = 'async'
+    use_object_keypoint = True
+    with_reach_stage = True
+    
+    asymmetric_obs = True
+
+@configclass
+class Baselines_woref_pos_woreach(HammerAssemblyEnvBaseCfg):
+    control_mode = 'pos'
+    use_ref = False
+    reward_type = 'async'
+    use_object_keypoint = True
+    with_reach_stage = False
+    
+    asymmetric_obs = True
+
+
+
+##############################################################################
+# with reference, velocity control, with reaching stage, disable chunk-split #
+##############################################################################
+@configclass
+class Baselines_wref_vel_wreach_nochunk(HammerAssemblyEnvBaseCfg):
+    control_mode = 'vel'
+    use_ref = True
+    reward_type = 'async'
+    use_object_keypoint = True
+    with_reach_stage = True
+    enable_chunk_split = False
+    
+    asymmetric_obs = True
+
+
+######################################################################################
+# with reference, velocity control, with reaching stage, disable success-gated reset #
+######################################################################################
+@configclass
+class Baselines_wref_vel_wreach_noreset(HammerAssemblyEnvBaseCfg):
+    control_mode = 'vel'
+    use_ref = True
+    reward_type = 'async'
+    use_object_keypoint = True
+    with_reach_stage = True
+    enable_chunk_split = True
+    enable_success_reset = False
+    
+    asymmetric_obs = True
